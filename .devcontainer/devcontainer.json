@@ -1,0 +1,1 @@
+{"name":"Videonic Android Codespace","image":"mcr.microsoft.com/devcontainers/java:21","features":{},"postCreateCommand":"echo 'Use GitHub Actions > Videonic Android Build to compile APK/AAB with the Android SDK'"}
