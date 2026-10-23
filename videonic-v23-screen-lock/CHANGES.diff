@@ -1,0 +1,168 @@
+--- v22.1/MainActivity.kt
++++ v23/MainActivity.kt
+@@ -405,6 +405,11 @@
+     }
+     var controlsVisible by remember { mutableStateOf(true) }
+     var lockPlayer by remember { mutableStateOf(false) }
++    // A locked player shows only a small unlock target, fading away after
++    // three seconds. A tap on the picture reveals it again without playing,
++    // pausing, seeking or activating any other playback gesture.
++    var lockIconVisible by remember { mutableStateOf(false) }
++    var lockIconTick by remember { mutableIntStateOf(0) }
+     var controlTick by remember { mutableIntStateOf(0) }
+     var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
+     var shuffled by remember { mutableStateOf(false) }
+@@ -458,9 +463,14 @@
+     // Without a manual Fullscreen press, follow the user's system Auto-rotate
+     // preference when the app's Auto-rotate setting is enabled.
+     // Explicit Exit Fullscreen returns portrait until playback is closed.
+-    LaunchedEffect(playerExpanded,autoRotate,forcedPlayerOrientation) {
++    LaunchedEffect(playerExpanded,autoRotate,forcedPlayerOrientation,lockPlayer) {
+         if(playerExpanded) {
+-            activity.requestedOrientation=when(forcedPlayerOrientation) {
++            // Freeze the actual on-screen rotation (including reverse landscape)
++            // while playback controls are locked. This overrides BOTH the
++            // app's Auto-rotate preference and the phone's rotation setting.
++            activity.requestedOrientation=if(lockPlayer)
++                ActivityInfo.SCREEN_ORIENTATION_LOCKED
++            else when(forcedPlayerOrientation) {
+                 "portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                 "landscape" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                 else -> if(autoRotate) ActivityInfo.SCREEN_ORIENTATION_USER
+@@ -1063,6 +1073,14 @@
+             delay(400L)
+         }
+     }
++    LaunchedEffect(lockPlayer,lockIconTick,playerExpanded,inPip) {
++        if(lockPlayer && playerExpanded && !inPip) {
++            delay(3000L)
++            lockIconVisible=false
++        } else {
++            lockIconVisible=false
++        }
++    }
+     LaunchedEffect(controlTick,playerExpanded,lockPlayer,speedDialog,trackDialog,volumePopup,brightnessPopup,decoderPicker,decoderInfo,overflowOpen,playbackError) {
+         if(playerExpanded && !lockPlayer && !speedDialog && trackDialog==null && !volumePopup && !brightnessPopup && !decoderPicker && !decoderInfo && !overflowOpen && playbackError==null) {
+             delay(5000)
+@@ -1072,7 +1090,7 @@
+     LaunchedEffect(gestureTick) { if(gestureLabel!=null){delay(1400);gestureLabel=null;gestureMode=null} }
+     BackHandler(playerExpanded || folder!=null || subpage!=null || tab!="Videos") {
+         when {
+-            playerExpanded -> { if(lockPlayer){lockPlayer=false;controlsVisible=true} else {
++            playerExpanded -> { if(lockPlayer){lockPlayer=false;lockIconVisible=false;controlsVisible=true;controlTick++} else {
+                 val activeId=controller?.currentMediaItem?.mediaId
+                 val actual=controller?.currentPosition ?: 0L
+                 playing?.takeIf{it.id.toString()==activeId}?.let {
+@@ -1183,7 +1201,14 @@
+                 if(!inPip) {
+                     Box(Modifier.fillMaxSize()
+                         .pointerInput(lockPlayer,doubleTapEnabled,gestureLevelsEnabled,seekSeconds,controller) {
+-                            if(!lockPlayer) {
++                            if(lockPlayer) {
++                                // Consume taps while locked: reveal only the unlock icon.
++                                // Every tap restarts the independent three-second timer.
++                                detectTapGestures(onTap={
++                                    lockIconVisible=true
++                                    lockIconTick++
++                                })
++                            } else {
+                                 var lastTapAt=0L
+                                 var lastTapX=0f
+                                 awaitEachGesture {
+@@ -1361,7 +1386,7 @@
+                         }
+                     }
+                 }
+-                if(!inPip && speedLockedAt!=null && !holdSpeedActive) {
++                if(!inPip && !lockPlayer && speedLockedAt!=null && !holdSpeedActive) {
+                     Surface(
+                         modifier=Modifier.align(Alignment.TopCenter).statusBarsPadding()
+                             .padding(top=70.dp).clickable {
+@@ -1382,7 +1407,7 @@
+                         }
+                     }
+                 }
+-                if(!inPip && gestureLabel!=null) {
++                if(!inPip && !lockPlayer && gestureLabel!=null) {
+                     if (gestureMode == "Brightness" || gestureMode == "Volume") {
+                         val isBright = gestureMode == "Brightness"
+                         val level = if(isBright) brightnessLevel else volumeLevel
+@@ -1411,26 +1436,25 @@
+                         Text(gestureLabel!!,color=Color.White,modifier=Modifier.padding(horizontal=20.dp,vertical=12.dp),fontWeight=FontWeight.Bold)
+                     }
+                 }
+-                if(!inPip && lockPlayer) {
+-                    Surface(shape=RoundedCornerShape(30.dp),color=Color(0xD9251516),
+-                        modifier=Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top=25.dp)) {
+-                        Row(Modifier.padding(horizontal=18.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically) {
+-                            Icon(Icons.Default.Lock,null,tint=Color.White,modifier=Modifier.size(19.dp))
+-                            Spacer(Modifier.width(10.dp))
+-                            Text("Screen locked",color=Color.White,fontWeight=FontWeight.SemiBold)
+-                        }
+-                    }
+-                    Column(Modifier.align(Alignment.CenterEnd).padding(end=28.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+-                        Surface(modifier=Modifier.size(62.dp).clip(RoundedCornerShape(50)).clickable {
+-                            lockPlayer=false;controlsVisible=true;controlTick++
+-                        },shape=RoundedCornerShape(50),color=Color.White.copy(alpha=.20f),
++                if(!inPip && lockPlayer && lockIconVisible) {
++                    // 38dp visual (down from 62dp), with a full 48dp touch area.
++                    // No persistent banner or label: the picture stays unobstructed.
++                    Box(Modifier.align(Alignment.CenterEnd).padding(end=18.dp)
++                        .size(48.dp).clickable {
++                            lockPlayer=false
++                            lockIconVisible=false
++                            controlsVisible=true
++                            controlTick++
++                        },contentAlignment=Alignment.Center) {
++                        Surface(modifier=Modifier.size(38.dp),
++                            shape=RoundedCornerShape(50),
++                            color=Color(0xCC1D293B),
+                             border=BorderStroke(1.dp,Color.White.copy(alpha=.45f))) {
+                             Box(contentAlignment=Alignment.Center) {
+-                                Icon(Icons.Default.LockOpen,"Unlock playback",tint=Color.White,modifier=Modifier.size(30.dp))
+-                            }
+-                        }
+-                        Spacer(Modifier.height(8.dp))
+-                        Text("Tap to unlock",fontSize=12.sp,color=Color.White,fontWeight=FontWeight.Bold)
++                                Icon(Icons.Default.LockOpen,"Unlock playback",
++                                    tint=Color.White,modifier=Modifier.size(19.dp))
++                            }
++                        }
+                     }
+                 }
+                 if(!inPip && controlsVisible && !holdSpeedActive && !lockPlayer &&
+@@ -1537,7 +1561,12 @@
+                             Text(clock(duration),color=Color.White,fontSize=12.sp)
+                         }
+                         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceAround) {
+-                            PlayerAction(Icons.Default.Lock,"Lock",landscape){lockPlayer=true;controlsVisible=false;controlTick++}
++                            PlayerAction(Icons.Default.Lock,"Lock",landscape){
++                                // LOCKED freezes the current physical screen rotation, not
++                                // merely the landscape/portrait orientation category.
++                                lockPlayer=true;lockIconVisible=true;lockIconTick++
++                                controlsVisible=false;controlTick++
++                            }
+                             PlayerAction(Icons.Default.Speed,"${speedLabel(speed)}x",landscape){speedDialog=true;controlTick++}
+                             PlayerAction(Icons.Default.AspectRatio,listOf("Original","Crop","Stretch","Width")[aspectIndex],landscape){
+                                 aspectIndex=(aspectIndex+1)%4
+@@ -1559,7 +1588,7 @@
+                 }
+                 // Small, non-blocking MX-style resume action. Video already plays
+                 // at the saved position while this is visible for five seconds.
+-                if(!inPip && restartPromptVisible &&
++                if(!inPip && !lockPlayer && restartPromptVisible &&
+                     restartPromptVideoId==controller?.currentMediaItem?.mediaId) {
+                     Surface(
+                         modifier=Modifier.align(Alignment.BottomCenter)
+@@ -1927,7 +1956,10 @@
+                                 onSeek={settingsSpeedDialog="seek"},
+                                 onAutoRotate={autoRotate=it;library.setAutoRotate(it);
+                                     forcedPlayerOrientation=null
+-                                    if(playerExpanded) activity.requestedOrientation=if(it) ActivityInfo.SCREEN_ORIENTATION_SENSOR else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED},
++                                    // Do not bypass a locked screen's rotation freeze.
++                                    // USER respects the phone's own rotation switch.
++                                    if(playerExpanded && !lockPlayer)
++                                        activity.requestedOrientation=if(it) ActivityInfo.SCREEN_ORIENTATION_USER else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED},
+                                 onKeepScreenOn={keepScreenOn=it;library.setKeepScreenOn(it);
+                                     if(playerExpanded) {
+                                         if(it) activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

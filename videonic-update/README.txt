@@ -1,0 +1,1 @@
+Videonic Lite Codespaces UI/gesture patch. Unzip in repo root and run: bash videonic-update/APPLY.sh. Compiles only in your Codespace. Includes backup. Test gesture behavior on device. Play policy content and privacy policy URLs not implemented in this patch.

@@ -5,12 +5,12 @@ import android.content.Context
 import android.provider.MediaStore
 import android.net.Uri
 
-data class LocalVideo(val id: Long, val uri: Uri, val title: String, val duration: Long, val size: Long, val folder: String, val modified: Long)
+data class LocalVideo(val id: Long, val uri: Uri, val title: String, val duration: Long, val size: Long, val folder: String, val modified: Long, val width:Int=0, val height:Int=0)
 
 class VideoRepository(private val context: Context) {
     fun load(): List<LocalVideo> {
         val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        val columns = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.SIZE, MediaStore.Video.Media.BUCKET_DISPLAY_NAME, MediaStore.Video.Media.DATE_MODIFIED)
+        val columns = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME, MediaStore.Video.Media.DURATION, MediaStore.Video.Media.SIZE, MediaStore.Video.Media.BUCKET_DISPLAY_NAME, MediaStore.Video.Media.DATE_MODIFIED, MediaStore.Video.Media.WIDTH, MediaStore.Video.Media.HEIGHT)
         val videos = mutableListOf<LocalVideo>()
         context.contentResolver.query(collection, columns, null, null, "${MediaStore.Video.Media.DATE_MODIFIED} DESC")?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
@@ -19,9 +19,13 @@ class VideoRepository(private val context: Context) {
             val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
             val folderCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
             val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
+            val widthCol = cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)
+            val heightCol = cursor.getColumnIndex(MediaStore.Video.Media.HEIGHT)
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
-                videos.add(LocalVideo(id, ContentUris.withAppendedId(collection, id), cursor.getString(nameCol) ?: "Video", if(cursor.isNull(durationCol)) 0 else cursor.getLong(durationCol), if(cursor.isNull(sizeCol)) 0 else cursor.getLong(sizeCol), cursor.getString(folderCol) ?: "Other", if(cursor.isNull(dateCol)) 0 else cursor.getLong(dateCol)))
+                videos.add(LocalVideo(id, ContentUris.withAppendedId(collection, id), cursor.getString(nameCol) ?: "Video", if(cursor.isNull(durationCol)) 0 else cursor.getLong(durationCol), if(cursor.isNull(sizeCol)) 0 else cursor.getLong(sizeCol), cursor.getString(folderCol) ?: "Other", if(cursor.isNull(dateCol)) 0 else cursor.getLong(dateCol),
+                    if(widthCol<0 || cursor.isNull(widthCol))0 else cursor.getInt(widthCol),
+                    if(heightCol<0 || cursor.isNull(heightCol))0 else cursor.getInt(heightCol)))
             }
         }
         return videos

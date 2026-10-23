@@ -1,0 +1,504 @@
+package com.videonic.lite
+
+import android.Manifest
+import android.content.ComponentName
+import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import android.net.Uri
+import android.app.PictureInPictureParams
+import android.view.ViewGroup
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
+import com.videonic.lite.data.LocalLibrary
+import com.videonic.lite.data.LocalVideo
+import com.videonic.lite.data.VideoRepository
+import com.videonic.lite.player.VideonicPlaybackService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.Locale
+
+private val Accent = Color(0xFF1169E8)
+private val Pale = Color(0xFFF1F5FA)
+private val Ink = Color(0xFF17243A)
+private val Muted = Color(0xFF64748B)
+private val Speeds = listOf(.25f,.5f,1f,1.5f,2f,2.5f,3f,4f)
+
+class MainActivity : ComponentActivity() {
+    private var future: ListenableFuture<MediaController>? = null
+    private val controller = mutableStateOf<MediaController?>(null)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val token = SessionToken(this, ComponentName(this, VideonicPlaybackService::class.java))
+        future = MediaController.Builder(this, token).buildAsync().also { f ->
+            f.addListener({ runCatching { controller.value = f.get() } }, MoreExecutors.directExecutor())
+        }
+        setContent { VideonicApp(controller.value, this) }
+    }
+    fun pictureInPicture() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching { enterPictureInPictureMode(PictureInPictureParams.Builder().build()) }
+        }
+    }
+    override fun onDestroy() {
+        future?.let { MediaController.releaseFuture(it) }
+        super.onDestroy()
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VideonicApp(controller: MediaController?, activity: MainActivity) {
+    val context = LocalContext.current
+    val library = remember { LocalLibrary(context) }
+    var videos by remember { mutableStateOf<List<LocalVideo>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var scanError by remember { mutableStateOf<String?>(null) }
+    var tab by remember { mutableStateOf("Videos") }
+    var folder by remember { mutableStateOf<String?>(null) }
+    var subpage by remember { mutableStateOf<String?>(null) }
+    var playing by remember { mutableStateOf<LocalVideo?>(null) }
+    var playerExpanded by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf("Newest") }
+    var sortDialog by remember { mutableStateOf(false) }
+    var grid by remember { mutableStateOf(library.grid()) }
+    var dark by remember { mutableStateOf(library.dark()) }
+    var favorites by remember { mutableStateOf(library.favorites()) }
+    var recent by remember { mutableStateOf(library.recent()) }
+    var playlistNames by remember { mutableStateOf(library.playlists()) }
+    var playlistDialog by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
+    var videoMenu by remember { mutableStateOf<LocalVideo?>(null) }
+    var addToPlaylist by remember { mutableStateOf<LocalVideo?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf<LocalVideo?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var playingNow by remember { mutableStateOf(false) }
+    var position by remember { mutableLongStateOf(0L) }
+    var duration by remember { mutableLongStateOf(0L) }
+    var speed by remember { mutableFloatStateOf(1f) }
+    var speedDialog by remember { mutableStateOf(false) }
+    var aspectIndex by remember { mutableIntStateOf(0) }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var lockPlayer by remember { mutableStateOf(false) }
+    var controlTick by remember { mutableIntStateOf(0) }
+    var repeat by remember { mutableStateOf(false) }
+    val permission = if(Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
+    var permitted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context,permission) == PackageManager.PERMISSION_GRANTED) }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permitted=it }
+
+    fun refresh() {
+        if (!permitted) { loading=false; return }
+        activity.lifecycleScope.launch {
+            loading=true; scanError=null
+            val result = withContext(Dispatchers.IO) { runCatching { VideoRepository(context).load() } }
+            videos=result.getOrDefault(emptyList())
+            scanError=result.exceptionOrNull()?.localizedMessage ?: if(result.isFailure) "MediaStore scan failed" else null
+            loading=false
+        }
+    }
+    LaunchedEffect(permitted) { if(permitted) refresh() else loading=false }
+    fun openVideo(video: LocalVideo) {
+        playing=video; playerExpanded=true; controlsVisible=true; lockPlayer=false; controlTick++
+        library.visited(video.id); recent=library.recent()
+        controller?.setMediaItem(MediaItem.fromUri(video.uri))
+        controller?.prepare()
+        controller?.seekTo(library.position(video.id))
+        controller?.setPlaybackSpeed(speed)
+        controller?.play()
+    }
+    fun closePlayer() {
+        playing?.let { library.savePosition(it.id, position) }
+        controller?.stop(); controller?.clearMediaItems()
+        playing=null; playerExpanded=false; speedDialog=false; lockPlayer=false
+        activity.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+    DisposableEffect(controller) {
+        if(controller==null) onDispose {} else {
+            val listener=object: Player.Listener {
+                override fun onIsPlayingChanged(isPlaying:Boolean) { playingNow=isPlaying }
+                override fun onPlaybackStateChanged(playbackState:Int) {
+                    duration=controller.duration.coerceAtLeast(0)
+                    position=controller.currentPosition.coerceAtLeast(0)
+                }
+            }
+            controller.addListener(listener)
+            playingNow=controller.isPlaying
+            onDispose { controller.removeListener(listener) }
+        }
+    }
+    LaunchedEffect(controller, playing) {
+        while(controller!=null && playing!=null) {
+            position=controller.currentPosition.coerceAtLeast(0)
+            duration=controller.duration.coerceAtLeast(0)
+            playing?.let { if(position > 2000) library.savePosition(it.id,position) }
+            delay(1000)
+        }
+    }
+    LaunchedEffect(controlTick,playerExpanded,lockPlayer,speedDialog) {
+        if(playerExpanded && !lockPlayer && !speedDialog) {
+            delay(5000)
+            controlsVisible=false
+        }
+    }
+    BackHandler(playerExpanded || folder!=null || subpage!=null || tab!="Videos") {
+        when {
+            playerExpanded -> { playerExpanded=false; speedDialog=false; activity.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+            subpage!=null -> subpage=null
+            folder!=null -> { folder=null;query="" }
+            else -> { tab="Videos";query="" }
+        }
+    }
+
+    val scheme=if(dark) darkColorScheme(primary=Accent,background=Color(0xFF101726)) else lightColorScheme(primary=Accent,background=Color.White,surface=Color.White)
+    MaterialTheme(colorScheme=scheme) {
+        val surface=MaterialTheme.colorScheme.background
+        val textColor=MaterialTheme.colorScheme.onBackground
+        if(playerExpanded && playing!=null) {
+            val item=playing!!
+            Box(Modifier.fillMaxSize().background(Color.Black).clickable { if(lockPlayer) { lockPlayer=false;controlsVisible=true } else { controlsVisible=!controlsVisible;controlTick++ } }) {
+                if(controller!=null) AndroidView(
+                    factory={ ctx -> PlayerView(ctx).apply { useController=false; player=controller; layoutParams=ViewGroup.LayoutParams(-1,-1) } },
+                    update={ it.player=controller; it.resizeMode=when(aspectIndex){1->AspectRatioFrameLayout.RESIZE_MODE_ZOOM;2->AspectRatioFrameLayout.RESIZE_MODE_FILL;else->AspectRatioFrameLayout.RESIZE_MODE_FIT} },
+                    modifier=Modifier.fillMaxSize()
+                )
+                if(lockPlayer) {
+                    IconButton(onClick={lockPlayer=false;controlsVisible=true;controlTick++},modifier=Modifier.align(Alignment.BottomCenter).padding(bottom=30.dp)) {
+                        Icon(Icons.Default.Lock,"Unlock controls",tint=Color.White)
+                    }
+                } else if(controlsVisible) {
+                    Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().background(Color.Black.copy(alpha=.57f)).padding(horizontal=4.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                        IconButton(onClick={playerExpanded=false;activity.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED}) { Icon(Icons.Default.ArrowBack,"Back",tint=Color.White) }
+                        Text(item.title,Modifier.weight(1f),color=Color.White,maxLines=1,overflow=TextOverflow.Ellipsis,fontWeight=FontWeight.SemiBold)
+                        IconButton(onClick={repeat=!repeat;controller?.repeatMode=if(repeat)Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF;controlTick++}) { Icon(Icons.Default.RepeatOne,if(repeat)"Repeat on" else "Repeat off",tint=if(repeat)Accent else Color.White) }
+                        IconButton(onClick={activity.pictureInPicture()}) { Icon(Icons.Default.PictureInPictureAlt,"Picture in picture",tint=Color.White) }
+                    }
+                    Row(Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal=18.dp),horizontalArrangement=Arrangement.SpaceEvenly,verticalAlignment=Alignment.CenterVertically) {
+                        IconButton(onClick={controller?.seekToPreviousMediaItem();controlTick++}) { Icon(Icons.Default.SkipPrevious,"Previous",tint=Color.White) }
+                        IconButton(onClick={controller?.let { it.seekTo((it.currentPosition-10000).coerceAtLeast(0)) };controlTick++}) { Icon(Icons.Default.Replay10,"Back 10 seconds",tint=Color.White,modifier=Modifier.size(32.dp)) }
+                        Surface(shape=RoundedCornerShape(100),color=Accent,modifier=Modifier.size(74.dp)) {
+                            IconButton(onClick={if(controller?.isPlaying==true)controller.pause() else controller?.play();controlTick++}) { Icon(if(playingNow) Icons.Default.Pause else Icons.Default.PlayArrow,"Play or pause",tint=Color.White,modifier=Modifier.size(42.dp)) }
+                        }
+                        IconButton(onClick={controller?.let { it.seekTo(it.currentPosition+10000) };controlTick++}) { Icon(Icons.Default.Forward10,"Forward 10 seconds",tint=Color.White,modifier=Modifier.size(32.dp)) }
+                        IconButton(onClick={controller?.seekToNextMediaItem();controlTick++}) { Icon(Icons.Default.SkipNext,"Next",tint=Color.White) }
+                    }
+                    Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha=.64f)).padding(horizontal=12.dp,vertical=10.dp)) {
+                        Row(verticalAlignment=Alignment.CenterVertically) {
+                            Text(clock(position),color=Color.White,fontSize=12.sp)
+                            Slider(
+                                value=if(duration>0)(position.toFloat()/duration).coerceIn(0f,1f) else 0f,
+                                onValueChange={controller?.seekTo((it*duration).toLong());controlTick++},
+                                modifier=Modifier.weight(1f).padding(horizontal=8.dp)
+                            )
+                            Text(clock(duration),color=Color.White,fontSize=12.sp)
+                        }
+                        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceAround) {
+                            PlayerAction(Icons.Default.Lock,"Lock"){lockPlayer=true}
+                            PlayerAction(Icons.Default.Speed,"${speedLabel(speed)}x"){speedDialog=true;controlTick++}
+                            PlayerAction(Icons.Default.AspectRatio,listOf("Fit","Zoom","Fill")[aspectIndex]){aspectIndex=(aspectIndex+1)%3;controlTick++}
+                            PlayerAction(Icons.Default.Fullscreen,"Fullscreen"){
+                                activity.requestedOrientation=if(activity.requestedOrientation==ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                controlTick++
+                            }
+                        }
+                    }
+                }
+                if(speedDialog) AlertDialog(onDismissRequest={speedDialog=false;controlTick++},title={Text("Playback speed")},text={
+                    Column { Speeds.chunked(4).forEach { row -> Row { row.forEach { option ->
+                        TextButton(onClick={speed=option;controller?.setPlaybackSpeed(speed);speedDialog=false;controlTick++},modifier=Modifier.weight(1f)) { Text("${speedLabel(option)}x",color=if(speed==option)Accent else MaterialTheme.colorScheme.onSurface) }
+                    } } } }
+                },confirmButton={TextButton(onClick={speedDialog=false;controlTick++}){Text("Close")}})
+            }
+        } else {
+            Scaffold(
+                containerColor=surface,
+                topBar={
+                    Column {
+                        TopAppBar(
+                            title={Column {Text(if(folder!=null)folder!! else if(subpage!=null)subpage!! else "Videonic Lite",maxLines=1,overflow=TextOverflow.Ellipsis,fontWeight=FontWeight.Bold,color=textColor);if(folder==null && subpage==null && tab=="Videos")Text("Your personal media hub",fontSize=11.sp,color=Muted)}},
+                            navigationIcon={if(folder!=null || subpage!=null)IconButton(onClick={folder=null;subpage=null;query=""}){Icon(Icons.Default.ArrowBack,"Back")} },
+                            actions={
+                                if(tab!="Me" && subpage==null) {
+                                    IconButton(onClick={refresh()}){Icon(Icons.Default.Refresh,"Refresh",tint=Accent)}
+                                    IconButton(onClick={grid=!grid;library.setGrid(grid)}){Icon(if(grid)Icons.Default.ViewList else Icons.Default.GridView,"Toggle grid",tint=Accent)}
+                                    IconButton(onClick={sortDialog=true}){Icon(Icons.Default.Sort,"Sort",tint=Accent)}
+                                }
+                            },
+                            colors=TopAppBarDefaults.topAppBarColors(containerColor=surface)
+                        )
+                        if(tab!="Me" && (tab!="Folders" || folder!=null) && subpage!="Playlists" && subpage!="About" && subpage!="Settings") {
+                            OutlinedTextField(value=query,onValueChange={query=it},placeholder={Text("Search videos...",color=Muted)},leadingIcon={Icon(Icons.Default.Search,null)},singleLine=true,shape=RoundedCornerShape(18.dp),modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp, vertical=5.dp))
+                        }
+                    }
+                },
+                bottomBar={
+                    Column {
+                        if(playing!=null) {
+                            val item=playing!!
+                            Surface(color=if(dark)Color(0xFF203047) else Color(0xFFE8F1FF),modifier=Modifier.fillMaxWidth()) {
+                                Row(Modifier.fillMaxWidth().clickable{playerExpanded=true;controlsVisible=true;controlTick++}.padding(horizontal=12.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                                    VideoThumb(item,Modifier.size(width=70.dp,height=49.dp))
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(item.title,Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis,fontWeight=FontWeight.Medium)
+                                    IconButton(onClick={if(controller?.isPlaying==true)controller.pause() else controller?.play()}){Icon(if(playingNow)Icons.Default.Pause else Icons.Default.PlayArrow,"Play pause",tint=Accent)}
+                                    IconButton(onClick={closePlayer()}){Icon(Icons.Default.Close,"Close player")}
+                                }
+                            }
+                        }
+                        NavigationBar(containerColor=surface) {
+                            listOf("Videos","Folders","Recent","Me").forEach { name ->
+                                NavigationBarItem(selected=tab==name,onClick={tab=name;folder=null;subpage=null;query=""},icon={Icon(when(name){"Videos"->Icons.Default.VideoLibrary;"Folders"->Icons.Default.Folder;"Recent"->Icons.Default.History;else->Icons.Default.Person},name)},label={Text(name)},colors=NavigationBarItemDefaults.colors(selectedIconColor=Accent,selectedTextColor=Accent))
+                            }
+                        }
+                    }
+                }
+            ) { padding ->
+                Column(Modifier.fillMaxSize().padding(padding)) {
+                    if(!permitted && tab!="Me") {
+                        EmptyState("Allow access to your videos","Videonic only reads your local media library.") {
+                            Button(onClick={ask.launch(permission)}) { Text("Allow video access") }
+                            TextButton(onClick={context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}")))}) {Text("Open app settings")}
+                        }
+                    } else if(loading && tab!="Me") {
+                        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){Column(horizontalAlignment=Alignment.CenterHorizontally) {CircularProgressIndicator();Spacer(Modifier.height(12.dp));Text("Scanning videos...",color=Muted)}}
+                    } else if(scanError!=null && tab!="Me") {
+                        EmptyState("Unable to scan videos",scanError.orEmpty()) {Button(onClick={refresh()}){Text("Retry")}}
+                    } else if(tab=="Me") {
+                        when(subpage) {
+                            "Favorites" -> VideoList(videos.filter{it.id.toString() in favorites}.sortedWith(videoComparator(sort)).filter{it.title.contains(query,true)},grid,library, {openVideo(it)},{videoMenu=it},favorites,"No favorites yet")
+                            "Playlists" -> {
+                                Row(Modifier.fillMaxWidth().padding(16.dp),verticalAlignment=Alignment.CenterVertically){Text("My playlists",Modifier.weight(1f),fontWeight=FontWeight.Bold);FilledTonalButton(onClick={playlistDialog=true}){Icon(Icons.Default.Add,null);Text("New")}}
+                                LazyColumn { items(playlistNames) { name ->
+                                    ListItem(headlineContent={Text(name)},supportingContent={Text("${library.playlistItems(name).size} videos")},leadingContent={Icon(Icons.Default.PlaylistPlay,null,tint=Accent)},trailingContent={Icon(Icons.Default.ChevronRight,null)},modifier=Modifier.clickable{subpage="Playlist:$name"})
+                                } }
+                            }
+                            "Settings" -> Column(Modifier.padding(22.dp)) {
+                                Text("Appearance",fontWeight=FontWeight.Bold,fontSize=19.sp)
+                                Spacer(Modifier.height(14.dp))
+                                Row(verticalAlignment=Alignment.CenterVertically){Text("Dark theme",Modifier.weight(1f));Switch(dark,{dark=it;library.setDark(it)})}
+                                Text("Local media only • No network streaming",color=Muted,fontSize=13.sp)
+                            }
+                            "About" -> Column(Modifier.padding(22.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+                                Icon(Icons.Default.PlayCircleFilled,null,tint=Accent,modifier=Modifier.size(68.dp))
+                                Spacer(Modifier.height(12.dp));Text("Videonic Lite",fontWeight=FontWeight.Bold,fontSize=24.sp)
+                                Text("Version 1.0.0 • Native Android",color=Muted)
+                                Spacer(Modifier.height(20.dp));Text("A private, lightweight player for videos stored on your device.",color=Muted)
+                            }
+                            else -> if(subpage?.startsWith("Playlist:")==true) {
+                                val name=subpage!!.removePrefix("Playlist:")
+                                val set=library.playlistItems(name)
+                                Row(Modifier.fillMaxWidth().padding(16.dp),verticalAlignment=Alignment.CenterVertically){Text("${set.size} videos",Modifier.weight(1f),color=Muted);TextButton(onClick={library.deletePlaylist(name);playlistNames=library.playlists();subpage="Playlists"}){Text("Delete playlist")}}
+                                VideoList(set.mapNotNull{id->videos.find{it.id.toString()==id}}.filter{it.title.contains(query,true)},grid,library,{openVideo(it)},{videoMenu=it},favorites,"Playlist is empty")
+                            } else MeScreen(videos,favorites,playlistNames,library,{subpage=it},{dark=!dark;library.setDark(dark)})
+                        }
+                    } else if(tab=="Folders" && folder==null) {
+                        val folderGroups=videos.groupBy{it.folder}.toList().sortedBy{it.first.lowercase()}
+                        if(folderGroups.isEmpty()) EmptyState("No folders found","Videos in your device folders will appear here.") {}
+                        else LazyColumn(contentPadding=PaddingValues(12.dp),verticalArrangement=Arrangement.spacedBy(9.dp)) {
+                            items(folderGroups,key={it.first}) { entry ->
+                                Surface(color=if(dark)MaterialTheme.colorScheme.surfaceVariant else Pale,shape=RoundedCornerShape(16.dp),modifier=Modifier.fillMaxWidth().clickable{folder=entry.first;query=""}) {
+                                    Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically){
+                                        Surface(color=Color(0xFFDDEBFF),shape=RoundedCornerShape(12.dp)){Icon(Icons.Default.Folder,null,tint=Accent,modifier=Modifier.padding(12.dp).size(26.dp))}
+                                        Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(entry.first,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${entry.second.size} videos",color=Accent,fontSize=12.sp)}
+                                        Icon(Icons.Default.ChevronRight,"Open folder",tint=Muted)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        val shown=when(tab){
+                            "Recent"-> recent.mapNotNull{id->videos.find{it.id.toString()==id}}
+                            "Folders"-> videos.filter{it.folder==folder}
+                            else-> videos
+                        }.filter{it.title.contains(query,true)}.let{if(tab=="Recent" && sort=="Newest")it else it.sortedWith(videoComparator(sort))}
+                        Row(Modifier.fillMaxWidth().padding(horizontal=17.dp,vertical=9.dp),verticalAlignment=Alignment.CenterVertically){
+                            Text(if(tab=="Recent")"${shown.size} recently watched" else "${shown.size} videos",Modifier.weight(1f),color=Muted,fontSize=13.sp)
+                            if(tab=="Recent" && recent.isNotEmpty())TextButton(onClick={confirmClear=true}){Icon(Icons.Default.DeleteSweep,null,tint=Color(0xFFE05555));Text("Clear",color=Color(0xFFE05555))}
+                        }
+                        VideoList(shown,grid,library,{openVideo(it)},{videoMenu=it},favorites,when(tab){"Recent"->"No recently watched videos";else->"No videos found"})
+                    }
+                }
+            }
+        }
+        if(sortDialog) AlertDialog(onDismissRequest={sortDialog=false},title={Text("Sort videos")},text={Column {listOf("Newest","Oldest","Name A-Z","Name Z-A","Largest","Longest").forEach{option->TextButton(onClick={sort=option;sortDialog=false}){Text(option)}}}},confirmButton={TextButton(onClick={sortDialog=false}){Text("Done")}})
+        if(playlistDialog) AlertDialog(onDismissRequest={playlistDialog=false},title={Text("New playlist")},text={OutlinedTextField(value=newPlaylistName,onValueChange={newPlaylistName=it.take(45)},label={Text("Playlist name")},singleLine=true)},confirmButton={TextButton(onClick={if(library.createPlaylist(newPlaylistName)){playlistNames=library.playlists();newPlaylistName="";playlistDialog=false}else notice="Enter a unique playlist name"}){Text("Create")}},dismissButton={TextButton(onClick={playlistDialog=false}){Text("Cancel")}})
+        videoMenu?.let { video ->
+            AlertDialog(onDismissRequest={videoMenu=null},title={Text(video.title,maxLines=2)},text={Column {
+                TextButton(onClick={library.toggleFavorite(video.id);favorites=library.favorites();videoMenu=null}) {Text(if(video.id.toString() in favorites)"Remove favorite" else "Add to favorites")}
+                TextButton(onClick={addToPlaylist=video;videoMenu=null}){Text("Add to playlist")}
+                if(tab=="Recent")TextButton(onClick={confirmRemove=video;videoMenu=null}){Text("Remove from recent")}
+                if(subpage?.startsWith("Playlist:")==true)TextButton(onClick={confirmRemove=video;videoMenu=null}){Text("Remove from playlist")}
+                TextButton(onClick={
+                    val share=Intent(Intent.ACTION_SEND).apply{type="video/*";putExtra(Intent.EXTRA_STREAM,video.uri);addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)}
+                    context.startActivity(Intent.createChooser(share,"Share video"));videoMenu=null
+                }){Text("Share video")}
+            }},confirmButton={TextButton(onClick={videoMenu=null}){Text("Close")}})
+        }
+        addToPlaylist?.let { video -> AlertDialog(onDismissRequest={addToPlaylist=null},title={Text("Add to playlist")},text={Column {if(playlistNames.isEmpty())Text("Create a playlist in Me first") else playlistNames.forEach{name->TextButton(onClick={library.addToPlaylist(name,video.id);addToPlaylist=null;notice="Added to $name"}){Text(name)}}}},confirmButton={TextButton(onClick={addToPlaylist=null}){Text("Close")}}) }
+        if(confirmClear) AlertDialog(onDismissRequest={confirmClear=false},title={Text("Clear recent history?")},text={Text("This will not delete any video files.")},confirmButton={TextButton(onClick={library.clearRecent();recent=emptyList();confirmClear=false}){Text("Clear history")}},dismissButton={TextButton(onClick={confirmClear=false}){Text("Cancel")}})
+        confirmRemove?.let{video->AlertDialog(onDismissRequest={confirmRemove=null},title={Text("Remove from collection?")},text={Text("The original video file will not be deleted.")},confirmButton={TextButton(onClick={
+            if(subpage?.startsWith("Playlist:")==true) library.removeFromPlaylist(subpage!!.removePrefix("Playlist:"),video.id)
+            else {library.removeRecent(video.id); recent=library.recent()}
+            confirmRemove=null;notice="Removed from collection"
+        }){Text("Remove")}},dismissButton={TextButton(onClick={confirmRemove=null}){Text("Cancel")}})}
+        notice?.let{message->AlertDialog(onDismissRequest={notice=null},title={Text("Videonic Lite")},text={Text(message)},confirmButton={TextButton(onClick={notice=null}){Text("OK")}})}
+    }
+}
+
+@Composable
+private fun PlayerAction(icon: androidx.compose.ui.graphics.vector.ImageVector,label:String,onClick:()->Unit) {
+    Column(horizontalAlignment=Alignment.CenterHorizontally) {
+        IconButton(onClick=onClick){Icon(icon,label,tint=Color.White)}
+        Text(label,color=Color.White,fontSize=11.sp)
+    }
+}
+
+@Composable
+private fun VideoThumb(video:LocalVideo,modifier:Modifier=Modifier) {
+    Box(modifier.clip(RoundedCornerShape(11.dp)).background(Color(0xFFDFE6F1)),contentAlignment=Alignment.Center) {
+        // MediaStore thumbnail is loaded by the OS. A placeholder remains when thumbnails are unavailable.
+        val context=LocalContext.current
+        var thumbnail by remember(video.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
+        LaunchedEffect(video.id) {
+            thumbnail=withContext(Dispatchers.IO) {
+                runCatching { context.contentResolver.loadThumbnail(video.uri,android.util.Size(240,160),null) }.getOrNull()
+            }
+        }
+        if(thumbnail!=null) Image(bitmap=thumbnail!!.asImageBitmap(),contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop)
+        else Icon(Icons.Default.Movie,null,tint=Accent,modifier=Modifier.size(29.dp))
+        Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color.Black.copy(alpha=.68f),RoundedCornerShape(4.dp)).padding(horizontal=4.dp,vertical=2.dp)) {Text(clock(video.duration),color=Color.White,fontSize=10.sp)}
+    }
+}
+
+@Composable
+private fun VideoList(videos:List<LocalVideo>,grid:Boolean,library:LocalLibrary,onOpen:(LocalVideo)->Unit,onMenu:(LocalVideo)->Unit,favorites:Set<String>,empty:String) {
+    if(videos.isEmpty()) {EmptyState(empty,"Your local videos will appear here."){};return}
+    if(grid) {
+        LazyVerticalGrid(columns=GridCells.Fixed(2),contentPadding=PaddingValues(12.dp),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+            gridItems(videos,key={it.id}) {video->
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f)).clickable{onOpen(video)}.padding(7.dp)) {
+                    VideoThumb(video,Modifier.fillMaxWidth().aspectRatio(1.5f))
+                    Spacer(Modifier.height(7.dp))
+                    Text(video.title,maxLines=2,overflow=TextOverflow.Ellipsis,fontSize=13.sp,fontWeight=FontWeight.Medium)
+                    Row(verticalAlignment=Alignment.CenterVertically) {
+                        Text(fileSize(video.size),Modifier.weight(1f),fontSize=11.sp,color=Muted)
+                        IconButton(onClick={onMenu(video)},modifier=Modifier.size(30.dp)){Icon(Icons.Default.MoreVert,"Video options",modifier=Modifier.size(19.dp))}
+                    }
+                }
+            }
+        }
+    } else LazyColumn(contentPadding=PaddingValues(horizontal=13.dp,vertical=7.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        items(videos,key={it.id}){video->
+            Surface(shape=RoundedCornerShape(15.dp),color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.35f),modifier=Modifier.fillMaxWidth().clickable{onOpen(video)}) {
+                Row(Modifier.padding(8.dp),verticalAlignment=Alignment.CenterVertically) {
+                    VideoThumb(video,Modifier.size(width=116.dp,height=76.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(video.title,maxLines=2,overflow=TextOverflow.Ellipsis,fontSize=14.sp,fontWeight=FontWeight.SemiBold)
+                        Spacer(Modifier.height(5.dp))
+                        Text("${fileSize(video.size)} • ${clock(video.duration)}",fontSize=11.sp,color=Muted)
+                        val progress=library.position(video.id)
+                        if(progress>0 && video.duration>0){Spacer(Modifier.height(6.dp));LinearProgressIndicator(progress={progress.toFloat()/video.duration.coerceAtLeast(1)},modifier=Modifier.fillMaxWidth().height(3.dp),color=Accent)}
+                    }
+                    IconButton(onClick={onMenu(video)}){Icon(Icons.Default.MoreVert,"Video options")}
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(title:String,detail:String,actions:@Composable ()->Unit) {
+    Box(Modifier.fillMaxSize().padding(24.dp),contentAlignment=Alignment.Center) {
+        Column(horizontalAlignment=Alignment.CenterHorizontally) {
+            Icon(Icons.Default.VideoLibrary,null,tint=Accent,modifier=Modifier.size(52.dp))
+            Spacer(Modifier.height(14.dp));Text(title,fontWeight=FontWeight.SemiBold,fontSize=18.sp)
+            Spacer(Modifier.height(5.dp));Text(detail,color=Muted,fontSize=13.sp)
+            Spacer(Modifier.height(12.dp));actions()
+        }
+    }
+}
+
+@Composable
+private fun MeScreen(videos:List<LocalVideo>,favorites:Set<String>,playlists:List<String>,library:LocalLibrary,open:(String)->Unit,toggleTheme:()->Unit) {
+    LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+        item {
+            Surface(color=Color(0xFFEBF3FF),shape=RoundedCornerShape(20.dp),modifier=Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(20.dp)) {
+                    Row(verticalAlignment=Alignment.CenterVertically) {Icon(Icons.Default.PlayCircleFilled,null,tint=Accent,modifier=Modifier.size(46.dp));Spacer(Modifier.width(13.dp));Column{Text("Videonic Lite",color=Ink,fontSize=23.sp,fontWeight=FontWeight.Bold);Text("Personal Media Hub",color=Muted,fontSize=12.sp)}}
+                    Spacer(Modifier.height(16.dp))
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                        Metric("Videos","${videos.size}")
+                        Metric("Storage",fileSize(videos.sumOf{it.size}))
+                        Metric("Favorites","${favorites.size}")
+                    }
+                }
+            }
+        }
+        item { Text("Collections",modifier=Modifier.padding(top=12.dp,bottom=3.dp),fontWeight=FontWeight.Bold,fontSize=18.sp) }
+        item { MeEntry(Icons.Default.Favorite,"Favorites","Saved videos"){open("Favorites")} }
+        item { MeEntry(Icons.Default.PlaylistPlay,"Playlists","Organize your videos"){open("Playlists")} }
+        item { Text("Preferences",modifier=Modifier.padding(top=12.dp,bottom=3.dp),fontWeight=FontWeight.Bold,fontSize=18.sp) }
+        item { MeEntry(Icons.Default.Settings,"Settings","Appearance and preferences"){open("Settings")} }
+        item { MeEntry(Icons.Default.Brightness6,"Theme","Switch light / dark"){toggleTheme()} }
+        item { MeEntry(Icons.Default.Info,"About","App information"){open("About")} }
+    }
+}
+
+@Composable
+private fun Metric(label:String,value:String) { Column { Text(value,color=Ink,fontWeight=FontWeight.Bold,fontSize=16.sp);Text(label,color=Muted,fontSize=11.sp) } }
+@Composable
+private fun MeEntry(icon:androidx.compose.ui.graphics.vector.ImageVector,title:String,subtitle:String,onClick:()->Unit) {
+    Surface(shape=RoundedCornerShape(14.dp),color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.45f),modifier=Modifier.fillMaxWidth().clickable(onClick=onClick)) {
+        Row(Modifier.padding(15.dp),verticalAlignment=Alignment.CenterVertically) {
+            Icon(icon,null,tint=Accent);Spacer(Modifier.width(14.dp));Column(Modifier.weight(1f)){Text(title,fontWeight=FontWeight.Medium);Text(subtitle,color=Muted,fontSize=12.sp)};Icon(Icons.Default.ChevronRight,null,tint=Muted)
+        }
+    }
+}
+private fun clock(ms:Long):String {val s=ms.coerceAtLeast(0)/1000;return if(s>=3600)String.format(Locale.US,"%d:%02d:%02d",s/3600,(s/60)%60,s%60) else String.format(Locale.US,"%02d:%02d",s/60,s%60)}
+private fun fileSize(bytes:Long):String=if(bytes>=1024L*1024*1024)String.format(Locale.US,"%.1f GB",bytes.toDouble()/(1024*1024*1024)) else String.format(Locale.US,"%.1f MB",bytes.toDouble()/(1024*1024))
+private fun speedLabel(value:Float)=if(value==value.toInt().toFloat())"${value.toInt()}.0" else value.toString()
+private fun videoComparator(sort: String): Comparator<LocalVideo> = when (sort){"Oldest"->compareBy{it.modified};"Name A-Z"->compareBy{it.title.lowercase()};"Name Z-A"->compareByDescending{it.title.lowercase()};"Largest"->compareByDescending{it.size};"Longest"->compareByDescending{it.duration};else->compareByDescending{it.modified}}

@@ -1,0 +1,234 @@
+package com.videonic.lite
+
+import android.Manifest
+import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.view.WindowManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import androidx.media3.ui.PlayerView
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
+import com.videonic.lite.data.LocalVideo
+import com.videonic.lite.data.VideoRepository
+import com.videonic.lite.player.VideonicPlaybackService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private val Blue = Color(0xFF0866E5)
+
+class MainActivity : ComponentActivity() {
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+    private val playerState = mutableStateOf<MediaController?>(null)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val token = SessionToken(this, ComponentName(this, VideonicPlaybackService::class.java))
+        val future = MediaController.Builder(this, token).buildAsync()
+        controllerFuture = future
+        future.addListener({ try { playerState.value = future.get() } catch (_: Exception) {} }, MoreExecutors.directExecutor())
+        setContent { VideonicApp(playerState.value) }
+    }
+    override fun onDestroy() {
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        super.onDestroy()
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VideonicApp(controller: MediaController?) {
+    val context = LocalContext.current
+    val activity = context as ComponentActivity
+    val prefs = remember { context.getSharedPreferences("videonic", 0) }
+    var videos by remember { mutableStateOf<List<LocalVideo>>(emptyList()) }
+    var loading by remember { mutableStateOf(false) }
+    var tab by remember { mutableStateOf("Videos") }
+    var folder by remember { mutableStateOf<String?>(null) }
+    var playing by remember { mutableStateOf<LocalVideo?>(null) }
+    var query by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf("Newest") }
+    var sortOpen by remember { mutableStateOf(false) }
+    var clearRecentOpen by remember { mutableStateOf(false) }
+    var recentIds by remember {
+        mutableStateOf(
+            prefs.getString("recent_ids", "")!!
+                .split(",").filter { it.isNotBlank() }
+        )
+    }
+    var speedOpen by remember { mutableStateOf(false) }
+    var speed by remember { mutableFloatStateOf(1f) }
+    var playingNow by remember { mutableStateOf(false) }
+    var position by remember { mutableLongStateOf(0L) }
+    var duration by remember { mutableLongStateOf(0L) }
+    var dark by remember { mutableStateOf(prefs.getBoolean("dark", false)) }
+    var favorites by remember { mutableStateOf(prefs.getStringSet("favorites", emptySet())?.toSet() ?: emptySet()) }
+    val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
+    var permitted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) }
+    val requestPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permitted = it }
+    fun refresh() {
+        if (!permitted) return
+        activity.lifecycleScope.launch {
+            loading = true
+            videos = withContext(Dispatchers.IO) { runCatching { VideoRepository(context).load() }.getOrDefault(emptyList()) }
+            loading = false
+        }
+    }
+    LaunchedEffect(permitted) { if (permitted) refresh() }
+    DisposableEffect(controller) {
+        if (controller == null) onDispose { }
+        else {
+            val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) { playingNow = isPlaying }
+                override fun onPlaybackStateChanged(playbackState: Int) { duration = controller.duration.coerceAtLeast(0); position = controller.currentPosition.coerceAtLeast(0) }
+            }
+            controller.addListener(listener)
+            onDispose { controller.removeListener(listener) }
+        }
+    }
+    LaunchedEffect(controller, playing) {
+        while (controller != null && playing != null) {
+            position = controller.currentPosition.coerceAtLeast(0)
+            duration = controller.duration.coerceAtLeast(0)
+            kotlinx.coroutines.delay(400)
+        }
+    }
+    BackHandler(playing != null || folder != null || tab != "Videos") {
+        when {
+            playing != null -> { controller?.pause(); controller?.stop(); playing = null; speedOpen = false }
+            folder != null -> folder = null
+            else -> tab = "Videos"
+        }
+    }
+    MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Blue) else lightColorScheme(primary = Blue)) {
+        if (playing != null) {
+            val item = playing!!
+            Column(Modifier.fillMaxSize().background(Color.Black)) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { controller?.pause(); controller?.stop(); playing = null }) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
+                    Text(item.title, Modifier.weight(1f), color = Color.White, maxLines = 1)
+                }
+                if (controller != null) AndroidView(factory = { ctx -> PlayerView(ctx).apply { player = controller; useController = false } }, update = { it.player = controller }, modifier = Modifier.weight(1f).fillMaxWidth())
+                else Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                    Slider(value = if(duration > 0) (position.toFloat()/duration).coerceIn(0f,1f) else 0f, onValueChange = { controller?.seekTo((it * duration).toLong()) })
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(formatTime(position), color=Color.White); Text(formatTime(duration), color=Color.White) }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { controller?.seekTo((controller.currentPosition - 10000).coerceAtLeast(0)) }) { Icon(Icons.Default.Replay10, "Back 10 seconds", tint=Color.White) }
+                        IconButton(onClick = { if(controller?.isPlaying == true) controller.pause() else controller?.play() }) { Icon(if(playingNow) Icons.Default.PauseCircle else Icons.Default.PlayCircle, "Play pause", tint=Blue, modifier=Modifier.size(58.dp)) }
+                        IconButton(onClick = { controller?.seekTo(controller.currentPosition + 10000) }) { Icon(Icons.Default.Forward10, "Forward 10 seconds", tint=Color.White) }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TextButton(onClick = { speedOpen = !speedOpen }) { Text("${"%.2f".format(speed)}x", color=Color.White) }
+                        TextButton(onClick = { controller?.repeatMode = if(controller?.repeatMode == Player.REPEAT_MODE_ONE) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ONE }) { Text("Repeat", color=Color.White) }
+                        TextButton(onClick = { activity.requestedOrientation = if(activity.requestedOrientation == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }) { Text("Fullscreen", color=Color.White) }
+                    }
+                    if(speedOpen) {
+                        Text("Speed ${"%.2f".format(speed)}x", color=Color.White)
+                        Slider(value=speed, onValueChange={ speed=it; controller?.setPlaybackSpeed(it) }, valueRange=0.25f..4f)
+                    }
+                }
+            }
+        } else {
+            Scaffold(topBar = { TopAppBar(title={ Text(if(folder == null) "Videonic Lite" else folder!!) }, actions={
+                IconButton(onClick={ refresh() }) { Icon(Icons.Default.Refresh, "Refresh") }
+                IconButton(onClick={ sortOpen=true }) { Icon(Icons.Default.Sort, "Sort") }
+            }) }, bottomBar={ NavigationBar { listOf("Videos", "Folders", "Recent", "Favorites", "Me").forEach { name -> NavigationBarItem(selected=tab==name, onClick={tab=name;folder=null}, icon={Icon(when(name){"Videos"->Icons.Default.VideoLibrary;"Folders"->Icons.Default.Folder;"Recent"->Icons.Default.History;"Favorites"->Icons.Default.Favorite;else->Icons.Default.Person},name)},label={Text(name)}) } } }) { padding ->
+                Column(Modifier.padding(padding).fillMaxSize()) {
+                    if(!permitted) Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment=Alignment.CenterHorizontally) {
+                        Text("Allow video access to browse your local library.")
+                        Spacer(Modifier.height(16.dp))
+                        Button(onClick={requestPermission.launch(permission)}) { Text("Allow video access") }
+                        TextButton(onClick={ context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) }) { Text("Open app permissions") }
+                    } else if(loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    when(tab) {
+                        "Me" -> Column(Modifier.padding(20.dp)) {
+                            Text("Settings",style=MaterialTheme.typography.titleLarge)
+                            Row(verticalAlignment=Alignment.CenterVertically) { Text("Dark mode", Modifier.weight(1f)); Switch(checked=dark,onCheckedChange={dark=it;prefs.edit().putBoolean("dark",it).apply()}) }
+                            Text("Videonic Lite • Alpha preview", style=MaterialTheme.typography.bodyMedium)
+                            Text("Local video playback. No online account.", style=MaterialTheme.typography.bodySmall)
+                        }
+                        else -> {
+                            val shown = when(tab) {
+                                "Folders" -> if(folder==null) emptyList() else videos.filter { it.folder==folder }
+                                "Favorites" -> videos.filter { it.id.toString() in favorites }
+                                "Recent" -> recentIds.mapNotNull { id ->
+                                    videos.firstOrNull { it.id.toString() == id }
+                                }
+                                else -> videos
+                            }.filter { it.title.contains(query, ignoreCase=true) }.let { list -> when(sort) {"Oldest"->list.sortedBy{it.modified};"Name A-Z"->list.sortedBy{it.title.lowercase()};"Name Z-A"->list.sortedByDescending{it.title.lowercase()};"Largest"->list.sortedByDescending{it.size};"Longest"->list.sortedByDescending{it.duration};else->list.sortedByDescending{it.modified}} }
+                            if(tab=="Recent" && recentIds.isNotEmpty()) {
+                                TextButton(onClick={clearRecentOpen=true}) {
+                                    Text("Clear history")
+                                }
+                            }
+                            if(tab=="Videos" || folder!=null) OutlinedTextField(value=query,onValueChange={query=it},label={Text("Search videos")},singleLine=true,modifier=Modifier.fillMaxWidth().padding(horizontal=12.dp))
+                            if(tab=="Folders" && folder==null) {
+                                LazyColumn { items(videos.groupBy { it.folder }.toList()) { entry -> ListItem(headlineContent={Text(entry.first)},supportingContent={Text("${entry.second.size} videos")},leadingContent={Icon(Icons.Default.Folder,null)},modifier=Modifier.clickable{folder=entry.first}) } }
+                            } else {
+                                if(shown.isEmpty()) Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){Text(if(tab=="Recent") "No recently watched videos" else "No videos found")}
+                                LazyColumn { items(shown,key={it.id}) { video ->
+                                    ListItem(headlineContent={Text(video.title,maxLines=1)}, supportingContent={Text("${formatTime(video.duration)} • ${video.size/1024/1024} MB")},leadingContent={Icon(Icons.Default.Movie,null,tint=Blue)},trailingContent={IconButton(onClick={favorites = if(video.id.toString() in favorites) favorites-video.id.toString() else favorites+video.id.toString();prefs.edit().putStringSet("favorites",favorites).apply()}) {Icon(if(video.id.toString() in favorites) Icons.Default.Favorite else Icons.Default.FavoriteBorder,"Favorite",tint=Blue)}},modifier=Modifier.clickable { playing=video
+                                        recentIds = (listOf(video.id.toString()) +
+                                            recentIds.filterNot { it == video.id.toString() })
+                                            .take(100)
+                                        prefs.edit().putString(
+                                            "recent_ids", recentIds.joinToString(",")
+                                        ).apply()
+                                        controller?.setMediaItem(MediaItem.fromUri(video.uri)); controller?.prepare();controller?.play() })
+                                    HorizontalDivider()
+                                } }
+                            }
+                        }
+                    }
+                }
+            }
+            if(clearRecentOpen) AlertDialog(
+                onDismissRequest={clearRecentOpen=false},
+                title={Text("Clear watch history?")},
+                text={Text("This removes your recent history, not your video files.")},
+                confirmButton={
+                    TextButton(onClick={
+                        recentIds=emptyList()
+                        prefs.edit().remove("recent_ids").apply()
+                        clearRecentOpen=false
+                    }) { Text("Clear history") }
+                },
+                dismissButton={
+                    TextButton(onClick={clearRecentOpen=false}) { Text("Cancel") }
+                }
+            )
+            if(sortOpen) AlertDialog(onDismissRequest={sortOpen=false},title={Text("Sort videos")},text={Column { listOf("Newest","Oldest","Name A-Z","Name Z-A","Largest","Longest").forEach { name -> TextButton(onClick={sort=name;sortOpen=false}){Text(name)} } }},confirmButton={TextButton(onClick={sortOpen=false}){Text("Close")}})
+        }
+    }
+}
+private fun formatTime(ms: Long): String { val seconds = ms.coerceAtLeast(0)/1000; return "%02d:%02d".format(seconds/60, seconds%60) }

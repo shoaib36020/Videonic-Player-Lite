@@ -1,0 +1,132 @@
+// VIDEONIC_RECENT_ME_V5_20261019
+@Composable
+private fun RecentVideoArtwork(video:LocalVideo,modifier:Modifier=Modifier) {
+    val context=LocalContext.current
+    var thumbnail by remember(video.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(video.id) {
+        thumbnail=withContext(Dispatchers.IO) {
+            runCatching { context.contentResolver.loadThumbnail(video.uri,android.util.Size(600,500),null) }.getOrNull()
+        }
+    }
+    Box(modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF323341)),contentAlignment=Alignment.Center) {
+        if(thumbnail!=null) {
+            Image(thumbnail!!.asImageBitmap(),contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop)
+        } else {
+            Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(Color(0xFFB28D78),Color(0xFF443945)))))
+            Icon(Icons.Default.Movie,null,tint=Color.White.copy(alpha=.48f),modifier=Modifier.size(33.dp))
+        }
+    }
+}
+
+@Composable
+private fun RecentWatchRing(progress:Float,modifier:Modifier=Modifier) {
+    val safeProgress=progress.coerceIn(0f,1f)
+    Box(modifier.size(52.dp).clip(RoundedCornerShape(100)).background(Color.White),contentAlignment=Alignment.Center) {
+        Canvas(Modifier.fillMaxSize().padding(4.dp)) {
+            val lineWidth=4.dp.toPx()
+            drawArc(color=Color(0xFFE1E5EC),startAngle=-90f,sweepAngle=360f,
+                useCenter=false,style=Stroke(width=lineWidth,cap=StrokeCap.Round))
+            if(safeProgress>0f) drawArc(color=Accent,startAngle=-90f,
+                sweepAngle=360f*safeProgress,useCenter=false,
+                style=Stroke(width=lineWidth,cap=StrokeCap.Round))
+        }
+        Box(Modifier.size(32.dp).clip(RoundedCornerShape(100)).background(Color(0xFFF8FAFF)),
+            contentAlignment=Alignment.Center) {
+            Icon(Icons.Default.PlayArrow,"Resume video",tint=Accent,modifier=Modifier.size(20.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ReferenceRecentScreen(videos:List<LocalVideo>,library:LocalLibrary,
+    onOpen:(LocalVideo)->Unit,onMenu:(LocalVideo)->Unit) {
+    if(videos.isEmpty()) {
+        EmptyState("Nothing watched yet","Videos you watch will appear here."){}
+        return
+    }
+    val hero=videos.first()
+    val heroDuration=hero.duration.coerceAtLeast(0L)
+    val heroWatched=library.position(hero.id).coerceIn(0L,heroDuration)
+    val heroRatio=if(heroDuration>0L) heroWatched.toFloat()/heroDuration else 0f
+    LazyColumn(
+        contentPadding=PaddingValues(start=20.dp,end=20.dp,top=10.dp,bottom=28.dp),
+        verticalArrangement=Arrangement.spacedBy(20.dp)
+    ) {
+        item(key="continue") {
+            Box(Modifier.fillMaxWidth().aspectRatio(1.065f).clip(RoundedCornerShape(32.dp))
+                .clickable { onOpen(hero) }) {
+                RecentVideoArtwork(hero,Modifier.fillMaxSize())
+                Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(
+                    Color(0x553A241B),Color(0x66534240),Color(0xE921222A)))))
+                Column(Modifier.fillMaxSize().padding(20.dp),verticalArrangement=Arrangement.SpaceBetween) {
+                    Surface(shape=RoundedCornerShape(100),color=Color.White.copy(alpha=.23f)) {
+                        Text("CONTINUE WATCHING",modifier=Modifier.padding(horizontal=13.dp,vertical=8.dp),
+                            fontSize=11.sp,color=Color.White,fontWeight=FontWeight.ExtraBold)
+                    }
+                    Column {
+                        Text(hero.title,color=Color.White,fontSize=20.sp,fontWeight=FontWeight.ExtraBold,
+                            maxLines=2,overflow=TextOverflow.Ellipsis,lineHeight=25.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text("${resolutionLabel(hero.width,hero.height)} · ${fileSize(hero.size)} · ${clock(hero.duration)}",
+                            color=Color.White.copy(alpha=.85f),fontSize=12.sp,maxLines=1,
+                            overflow=TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(14.dp))
+                        Row(verticalAlignment=Alignment.Bottom) {
+                            Column(Modifier.weight(1f)) {
+                                LinearProgressIndicator(progress={heroRatio},
+                                    modifier=Modifier.fillMaxWidth().height(5.dp)
+                                        .clip(RoundedCornerShape(100)),
+                                    color=Color.White,trackColor=Color.White.copy(alpha=.34f))
+                                Spacer(Modifier.height(8.dp))
+                                Text("${clock((heroDuration-heroWatched).coerceAtLeast(0L))} left",
+                                    color=Color.White.copy(alpha=.93f),fontSize=12.sp)
+                            }
+                            Spacer(Modifier.width(14.dp))
+                            Surface(shape=RoundedCornerShape(100),color=Color.White,modifier=Modifier.size(60.dp)) {
+                                Box(contentAlignment=Alignment.Center) {
+                                    Icon(Icons.Default.PlayArrow,"Continue watching",tint=Accent,
+                                        modifier=Modifier.size(31.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if(videos.size>1) {
+            item(key="earlier-label") {
+                Text("EARLIER",color=Color(0xFF9BA8BA),fontWeight=FontWeight.Bold,
+                    letterSpacing=1.sp,fontSize=13.sp,
+                    modifier=Modifier.padding(top=4.dp))
+            }
+            items(videos.drop(1),key={it.id}) { video ->
+                val videoDuration=video.duration.coerceAtLeast(0L)
+                val watched=library.position(video.id).coerceIn(0L,videoDuration)
+                val watchFraction=if(videoDuration>0L) watched.toFloat()/videoDuration else 0f
+                val percent=(watchFraction*100).toInt().coerceIn(0,100)
+                val leftSeconds=((videoDuration-watched).coerceAtLeast(0L)+999L)/1000L
+                val remaining=if(leftSeconds<60L) "${leftSeconds}s left" else "${clock(videoDuration-watched)} left"
+                Row(Modifier.fillMaxWidth().combinedClickable(onClick={onOpen(video)},
+                    onLongClick={onMenu(video)}).padding(bottom=6.dp),
+                    verticalAlignment=Alignment.CenterVertically) {
+                    Box(Modifier.size(94.dp)) {
+                        RecentVideoArtwork(video,Modifier.size(84.dp).align(Alignment.TopStart))
+                        RecentWatchRing(watchFraction,Modifier.align(Alignment.BottomEnd))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(5.dp)) {
+                        Text(video.title,color=MaterialTheme.colorScheme.onBackground,
+                            fontSize=15.sp,fontWeight=FontWeight.ExtraBold,maxLines=2,
+                            overflow=TextOverflow.Ellipsis,lineHeight=20.sp)
+                        Text("${resolutionLabel(video.width,video.height)} · ${fileSize(video.size)} · ${clock(video.duration)}",
+                            color=Muted,fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                        Text("${percent}% watched · $remaining",color=Accent,fontSize=12.sp,
+                            fontWeight=FontWeight.SemiBold,maxLines=1,
+                            overflow=TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}

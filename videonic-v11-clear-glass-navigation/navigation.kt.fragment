@@ -1,0 +1,114 @@
+@Composable
+private fun VideonicBottomNavigation(selectedTab:String,glass:Boolean,onSelect:(String)->Unit) {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < .22f
+    val barShape = RoundedCornerShape(38.dp)
+    val labels = listOf("Videos", "Folders", "Recent", "Me")
+
+    // Preserve the pre-v10 Classic navigation exactly: this is not a visual redesign
+    // of the normal navigation bar.
+    if (!glass) {
+        Surface(
+            modifier = Modifier.fillMaxWidth()
+                .padding(start=16.dp,end=16.dp,top=8.dp,bottom=22.dp),
+            shape=barShape,
+            color=MaterialTheme.colorScheme.surface,
+            border=BorderStroke(.5.dp,MaterialTheme.colorScheme.outline.copy(alpha=.08f)),
+            shadowElevation=8.dp
+        ) {
+            Row(Modifier.fillMaxWidth().padding(6.dp),
+                verticalAlignment=Alignment.CenterVertically) {
+                labels.forEach { name ->
+                    val selected=selectedTab==name
+                    Row(Modifier.weight(if(selected)1.5f else .75f)
+                        .clip(RoundedCornerShape(32.dp))
+                        .background(if(selected) Accent else Color.Transparent)
+                        .clickable { onSelect(name) }
+                        .padding(vertical=13.dp,horizontal=7.dp),
+                        horizontalArrangement=Arrangement.Center,
+                        verticalAlignment=Alignment.CenterVertically) {
+                        Icon(when(name) {"Videos"->Icons.Default.VideoLibrary;
+                            "Folders"->Icons.Default.Folder;
+                            "Recent"->Icons.Default.History;
+                            else->Icons.Default.Person},name,
+                            tint=if(selected)Color.White else Color(0xFF94A3B8),
+                            modifier=Modifier.size(24.dp))
+                        if(selected) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(name,color=Color.White,fontWeight=FontWeight.Bold,fontSize=13.sp,
+                                maxLines=1,overflow=TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    // iPhone-inspired CLEAR glass. The entire pill is translucent and icons sit
+    // directly on it; inactive buttons have no separate colored backgrounds.
+    // Total bar content height is the original 62dp (24dp icon + 26dp tap
+    // padding + 12dp inner padding), not the taller v10 treatment.
+    val frosted = if(isDark)
+        Brush.verticalGradient(listOf(
+            Color(0x724B5566), Color(0x53303C50), Color(0x4B202C42)))
+    else
+        Brush.verticalGradient(listOf(
+            Color(0x9AFFFFFF), Color(0x72F8FAFD), Color(0x4CE9EFF8)))
+    val edge=if(isDark) Color.White.copy(alpha=.34f)
+        else Color.White.copy(alpha=.87f)
+    val selectedTint=if(isDark) Color(0xFFA9CDFF) else Accent
+
+    Box(
+        Modifier.fillMaxWidth()
+            .padding(start=16.dp,end=16.dp,top=8.dp,bottom=22.dp)
+            .height(62.dp)
+            .shadow(11.dp,barShape)
+            .clip(barShape)
+            .background(frosted)
+            .border(1.dp,edge,barShape)
+    ) {
+        // Reflected light across the whole bar, not a solid blue wash.
+        Box(Modifier.fillMaxWidth().height(17.dp).align(Alignment.TopCenter)
+            .background(Brush.verticalGradient(listOf(
+                Color.White.copy(alpha=if(isDark).14f else .34f),Color.Transparent))))
+        Box(Modifier.fillMaxWidth(.80f).height(1.dp).align(Alignment.TopCenter)
+            .background(Brush.horizontalGradient(listOf(Color.Transparent,
+                Color.White.copy(alpha=if(isDark).42f else .80f),Color.Transparent))))
+
+        Row(Modifier.fillMaxSize().padding(horizontal=6.dp,vertical=5.dp),
+            verticalAlignment=Alignment.CenterVertically) {
+            labels.forEach { name ->
+                val selected=selectedTab==name
+                val pill=RoundedCornerShape(30.dp)
+                val selectionColor=if(isDark) Color.White.copy(alpha=.14f)
+                    else Color.White.copy(alpha=.53f)
+                Row(
+                    Modifier.weight(if(selected)1.5f else .82f)
+                        .fillMaxHeight()
+                        .clip(pill)
+                        .background(if(selected) selectionColor else Color.Transparent)
+                        .then(if(selected) Modifier.border(.8.dp,
+                            Color.White.copy(alpha=if(isDark).24f else .70f),pill)
+                            else Modifier)
+                        .clickable { onSelect(name) }
+                        .padding(horizontal=if(selected)6.dp else 0.dp),
+                    horizontalArrangement=Arrangement.Center,
+                    verticalAlignment=Alignment.CenterVertically
+                ) {
+                    Icon(when(name) {"Videos"->Icons.Default.VideoLibrary;
+                        "Folders"->Icons.Default.Folder;
+                        "Recent"->Icons.Default.History;
+                        else->Icons.Default.Person},name,
+                        tint=if(selected) selectedTint
+                            else if(isDark) Color(0xFFD5DFEA) else Color(0xFF6C788A),
+                        modifier=Modifier.size(23.dp))
+                    if(selected) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(name,color=selectedTint,fontWeight=FontWeight.SemiBold,
+                            fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}

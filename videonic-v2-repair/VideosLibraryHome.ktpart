@@ -1,0 +1,153 @@
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun VideosLibraryHome(
+    videos:List<LocalVideo>,
+    grid:Boolean,
+    sortLabel:String,
+    query:String,
+    showSearch:Boolean,
+    library:LocalLibrary,
+    selected:Set<Long>,
+    onSelect:(Long)->Unit,
+    onOpen:(LocalVideo)->Unit,
+    onMenu:(LocalVideo)->Unit,
+    onToggleSearch:()->Unit,
+    onToggleGrid:()->Unit,
+    onOpenSort:()->Unit,
+    onQueryChange:(String)->Unit
+) {
+    val sortDescription=when(sortLabel) {
+        "Newest" -> "Newest first"
+        "Oldest" -> "Oldest first"
+        "Name A-Z" -> "Name A-Z"
+        "Name Z-A" -> "Name Z-A"
+        "Largest" -> "Largest first"
+        "Smallest" -> "Smallest first"
+        "Longest" -> "Longest first"
+        "Shortest" -> "Shortest first"
+        else -> sortLabel
+    }
+    val columns=if(LocalConfiguration.current.screenWidthDp>=720) 3 else 2
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            // Extra top breathing room; Scaffold already provides system-bar insets.
+            Row(
+                Modifier.fillMaxWidth().padding(start=20.dp,end=20.dp,top=44.dp,bottom=22.dp),
+                verticalAlignment=Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Videos",fontSize=36.sp,fontWeight=FontWeight.ExtraBold,color=Ink,maxLines=1)
+                    Spacer(Modifier.height(3.dp))
+                    Text("${videos.size} videos · $sortDescription",color=Muted,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                }
+                Spacer(Modifier.width(8.dp))
+                Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                    HomeCircleButton(Icons.Default.Sort,"Sort videos",onOpenSort)
+                    HomeCircleButton(if(grid)Icons.Default.ViewList else Icons.Default.GridView,"Change view",onToggleGrid)
+                }
+            }
+            if(showSearch) {
+                OutlinedTextField(
+                    value=query,onValueChange=onQueryChange,
+                    placeholder={Text("Search videos",color=Muted)},
+                    leadingIcon={Icon(Icons.Default.Search,null)},singleLine=true,
+                    shape=RoundedCornerShape(24.dp),
+                    modifier=Modifier.fillMaxWidth().padding(start=20.dp,end=20.dp,bottom=8.dp)
+                )
+            }
+            if(videos.isEmpty()) {
+                EmptyState("No videos found","Your local videos will appear here."){}
+            } else if(grid) {
+                // Grid appearance is unique to Videos; Favorites and other grids stay unchanged.
+                LazyVerticalGrid(
+                    columns=GridCells.Fixed(columns),
+                    contentPadding=PaddingValues(start=20.dp,end=20.dp,top=10.dp,bottom=110.dp),
+                    horizontalArrangement=Arrangement.spacedBy(14.dp),
+                    verticalArrangement=Arrangement.spacedBy(22.dp)
+                ) {
+                    gridItems(videos,key={it.id}) {video ->
+                        Column(
+                            Modifier.fillMaxWidth().combinedClickable(
+                                onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},
+                                onLongClick={onSelect(video.id)}
+                            )
+                        ) {
+                            Box(Modifier.fillMaxWidth()) {
+                                VideoThumb(video,Modifier.fillMaxWidth().aspectRatio(1.46f).clip(RoundedCornerShape(23.dp)))
+                                if(video.id in selected) Icon(
+                                    Icons.Default.CheckCircle,"Selected",tint=Accent,
+                                    modifier=Modifier.align(Alignment.TopStart).padding(8.dp).size(26.dp)
+                                )
+                                Surface(
+                                    shape=RoundedCornerShape(100),
+                                    color=Color.Black.copy(alpha=.25f),
+                                    modifier=Modifier.align(Alignment.TopEnd).padding(5.dp).size(35.dp)
+                                ) {
+                                    IconButton(onClick={onMenu(video)},modifier=Modifier.size(35.dp)) {
+                                        Icon(Icons.Default.MoreVert,"Video options",tint=Color.White,modifier=Modifier.size(20.dp))
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                video.title,color=Ink,fontSize=14.sp,fontWeight=FontWeight.ExtraBold,
+                                maxLines=1,overflow=TextOverflow.Ellipsis,
+                                modifier=Modifier.fillMaxWidth()
+                            )
+                            Spacer(Modifier.height(5.dp))
+                            Row(verticalAlignment=Alignment.CenterVertically) {
+                                Text(resolutionLabel(video.width,video.height),color=Accent,fontWeight=FontWeight.Bold,fontSize=13.sp,maxLines=1)
+                                Text(" · ${fileSize(video.size)}",color=Muted,fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            } else {
+                val groups=videos.groupBy { dateHeading(it.modified) }
+                LazyColumn(
+                    contentPadding=PaddingValues(start=20.dp,end=20.dp,top=6.dp,bottom=110.dp),
+                    verticalArrangement=Arrangement.spacedBy(8.dp)
+                ) {
+                    groups.forEach { (heading, itemsForDate) ->
+                        item(heading) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(heading,color=Muted,fontSize=12.sp,fontWeight=FontWeight.Bold)
+                        }
+                        items(itemsForDate,key={it.id}) {video ->
+                            Row(
+                                Modifier.fillMaxWidth().combinedClickable(
+                                    onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},
+                                    onLongClick={onSelect(video.id)}
+                                ).padding(vertical=10.dp),
+                                verticalAlignment=Alignment.CenterVertically
+                            ) {
+                                Box {
+                                    VideoThumb(video,Modifier.size(width=138.dp,height=82.dp))
+                                    if(video.id in selected) Icon(Icons.Default.CheckCircle,"Selected",tint=Accent,modifier=Modifier.align(Alignment.TopEnd).padding(4.dp))
+                                }
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(video.title,maxLines=2,overflow=TextOverflow.Ellipsis,fontSize=14.sp,fontWeight=FontWeight.ExtraBold,color=Ink)
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(verticalAlignment=Alignment.CenterVertically) {
+                                        Text(resolutionLabel(video.width,video.height),color=Accent,fontWeight=FontWeight.Bold,fontSize=12.sp)
+                                        Text(" · ${fileSize(video.size)}",color=Muted,fontSize=12.sp)
+                                    }
+                                }
+                                IconButton(onClick={onMenu(video)}) { Icon(Icons.Default.MoreVert,"Options",tint=Color(0xFF98A2B3)) }
+                            }
+                            HorizontalDivider(color=Color(0xFFF0F2F7))
+                        }
+                    }
+                }
+            }
+        }
+        Surface(
+            shape=RoundedCornerShape(100),color=Accent,shadowElevation=10.dp,
+            modifier=Modifier.align(Alignment.BottomEnd).padding(end=22.dp,bottom=24.dp).size(68.dp).clickable(onClick=onToggleSearch)
+        ) {
+            Box(contentAlignment=Alignment.Center) { Icon(Icons.Default.Search,"Search",tint=Color.White,modifier=Modifier.size(32.dp)) }
+        }
+    }
+}
+

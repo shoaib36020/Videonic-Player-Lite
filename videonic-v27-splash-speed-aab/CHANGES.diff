@@ -1,0 +1,109 @@
+--- /mnt/data/videonic_work/videonic-v26-fullscreen-bulk-startup/MainActivity.kt	2026-10-21 10:49:42.000000000 +0000
++++ MainActivity.kt	2026-10-21 11:45:15.817625954 +0000
+@@ -344,10 +344,7 @@
+     val context = LocalContext.current
+     val library = remember { LocalLibrary(context) }
+     val appPrefs=remember { context.getSharedPreferences("videonic", Context.MODE_PRIVATE) }
+-    var launchBrandVisible by remember { mutableStateOf(true) }
+-    // The native Android starting window already displays the brand icon.
+-    // Keep Compose's matching screen only briefly; never impose a 620ms wait.
+-    LaunchedEffect(Unit) { delay(220); launchBrandVisible=false }
++    // Android displays the sole native splash; Compose opens directly to real content.
+     var videos by remember { mutableStateOf<List<LocalVideo>>(emptyList()) }
+     var loading by remember { mutableStateOf(true) }
+     var scanError by remember { mutableStateOf<String?>(null) }
+@@ -1238,22 +1235,7 @@
+     MaterialTheme(colorScheme=scheme) {
+         val surface=MaterialTheme.colorScheme.background
+         val textColor=MaterialTheme.colorScheme.onBackground
+-        if(launchBrandVisible && !inPip) {
+-            // One brand presentation in every theme. Android's system splash is
+-            // also white with the same icon, so the user sees one continuous
+-            // brand treatment instead of two different splash screens.
+-            Box(Modifier.fillMaxSize().background(Color.White),
+-                contentAlignment=Alignment.Center) {
+-                // Keep the icon centered in exactly the same location as
+-                // Android's white launch splash; only the title fades in below.
+-                Image(painterResource(R.drawable.videonic_brand),"Videonic Player",
+-                    modifier=Modifier.size(128.dp).align(Alignment.Center),
+-                    contentScale=ContentScale.Fit)
+-                Text("Videonic Player",color=Color(0xFF111827),
+-                    fontWeight=FontWeight.ExtraBold,fontSize=28.sp,
+-                    modifier=Modifier.align(Alignment.Center).offset(y=105.dp))
+-            }
+-        } else if(playerExpanded && playing!=null) {
++        if(playerExpanded && playing!=null) {
+             val item=playing!!
+             Box(Modifier.fillMaxSize().background(Color.Black)) {
+                 // Only this expanded view may own Media3's video surface. The mini-player
+@@ -1464,33 +1446,47 @@
+ 
+                 }
+                 if(!inPip && holdSpeedActive) {
+-                    // Top-centered miniature MX-style pill, never in the centre of
+-                    // the picture. A fixed dp width stays compact in landscape.
+-                    Surface(
++                    // Keep the actual speed bar small and near the top. Explain
++                    // the lock gesture in a separate, unobtrusive label below it.
++                    Column(
+                         modifier=Modifier.align(Alignment.TopCenter).statusBarsPadding()
+-                            .padding(top=if(landscape) 16.dp else 78.dp)
+-                            .width(174.dp),
+-                        shape=RoundedCornerShape(50),
+-                        color=Color(0xE91A2030),
+-                        border=BorderStroke(.7.dp,Color.White.copy(alpha=.25f))
++                            .padding(top=if(landscape) 16.dp else 78.dp),
++                        horizontalAlignment=Alignment.CenterHorizontally,
++                        verticalArrangement=Arrangement.spacedBy(5.dp)
+                     ) {
+-                        Row(Modifier.padding(horizontal=5.dp,vertical=4.dp),
+-                            verticalAlignment=Alignment.CenterVertically,
+-                            horizontalArrangement=Arrangement.spacedBy(5.dp)) {
+-                            Surface(color=Accent,shape=RoundedCornerShape(50)) {
+-                                Text("» ${speedLabel(holdSpeedSelected)}x",color=Color.White,
+-                                    fontWeight=FontWeight.Bold,fontSize=10.sp,maxLines=1,
+-                                    modifier=Modifier.padding(horizontal=7.dp,vertical=4.dp))
+-                            }
+-                            Row(Modifier.weight(1f),horizontalArrangement=Arrangement.SpaceBetween,
+-                                verticalAlignment=Alignment.CenterVertically) {
+-                                listOf(.5f,1f,1.5f,2f,2.5f,3f,4f).forEach { option ->
+-                                    Box(Modifier.size(if(option==holdSpeedSelected)5.dp else 3.dp)
+-                                        .background(if(option==holdSpeedSelected)Accent else Color(0xFF9CA8C0),RoundedCornerShape(50)))
++                        Surface(
++                            modifier=Modifier.width(174.dp),
++                            shape=RoundedCornerShape(50),
++                            color=Color(0xE91A2030),
++                            border=BorderStroke(.7.dp,Color.White.copy(alpha=.25f))
++                        ) {
++                            Row(Modifier.padding(horizontal=5.dp,vertical=4.dp),
++                                verticalAlignment=Alignment.CenterVertically,
++                                horizontalArrangement=Arrangement.spacedBy(5.dp)) {
++                                Surface(color=Accent,shape=RoundedCornerShape(50)) {
++                                    Text("» ${speedLabel(holdSpeedSelected)}x",color=Color.White,
++                                        fontWeight=FontWeight.Bold,fontSize=10.sp,maxLines=1,
++                                        modifier=Modifier.padding(horizontal=7.dp,vertical=4.dp))
+                                 }
++                                Row(Modifier.weight(1f),horizontalArrangement=Arrangement.SpaceBetween,
++                                    verticalAlignment=Alignment.CenterVertically) {
++                                    listOf(.5f,1f,1.5f,2f,2.5f,3f,4f).forEach { option ->
++                                        Box(Modifier.size(if(option==holdSpeedSelected)5.dp else 3.dp)
++                                            .background(if(option==holdSpeedSelected)Accent else Color(0xFF9CA8C0),RoundedCornerShape(50)))
++                                    }
++                                }
++                                Icon(Icons.Default.ArrowUpward,"Swipe up to lock",
++                                    tint=Color(0xFFD6E4FF),modifier=Modifier.size(11.dp))
+                             }
+-                            Icon(Icons.Default.ArrowUpward,"Swipe up to lock",
+-                                tint=Color(0xFFD6E4FF),modifier=Modifier.size(11.dp))
++                        }
++                        Surface(
++                            shape=RoundedCornerShape(50),
++                            color=Color(0xDC1A2030),
++                            border=BorderStroke(.5.dp,Color.White.copy(alpha=.15f))
++                        ) {
++                            Text("Swipe up to lock • Release to reset",
++                                color=Color(0xFFEAF2FF),fontSize=10.sp,maxLines=1,
++                                modifier=Modifier.padding(horizontal=10.dp,vertical=4.dp))
+                         }
+                     }
+                 }

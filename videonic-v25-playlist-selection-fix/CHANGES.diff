@@ -1,0 +1,152 @@
+--- v24/MainActivity.kt
++++ v25/MainActivity.kt
+@@ -410,6 +410,9 @@
+     var newPlaylistName by remember { mutableStateOf("") }
+     var videoMenu by remember { mutableStateOf<LocalVideo?>(null) }
+     var addToPlaylist by remember { mutableStateOf<LocalVideo?>(null) }
++    // v25: Changes stay in this temporary selection until Done is pressed.
++    // Cancel / Back discards them and leaves the real playlists untouched.
++    var playlistSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
+     var confirmClear by remember { mutableStateOf(false) }
+     var confirmRemove by remember { mutableStateOf<LocalVideo?>(null) }
+     var notice by remember { mutableStateOf<String?>(null) }
+@@ -2358,7 +2361,13 @@
+             onDismiss={sortDialog=false}
+         )
+         if(playlistDialog) AlertDialog(
+-            onDismissRequest={playlistDialog=false;playlistCreateFor=null},
++            onDismissRequest={
++                // The new-playlist editor returns to the same video picker on cancel.
++                addToPlaylist=playlistCreateFor
++                playlistCreateFor=null
++                playlistDialog=false
++                newPlaylistName=""
++            },
+             shape=RoundedCornerShape(30.dp),
+             containerColor=MaterialTheme.colorScheme.surface,
+             title={Text(if(playlistCreateFor==null) "New playlist" else "Create playlist",fontWeight=FontWeight.ExtraBold,fontSize=24.sp)},
+@@ -2371,11 +2380,23 @@
+             confirmButton={Button(enabled=newPlaylistName.trim().isNotEmpty(),onClick={
+                 val name=newPlaylistName.trim()
+                 if(library.createPlaylist(name)) {
+-                    playlistCreateFor?.let{library.addToPlaylist(name,it.id)}
+-                    playlistNames=library.playlists();newPlaylistName="";playlistDialog=false;playlistCreateFor=null;addToPlaylist=null
++                    val returnToPicker=playlistCreateFor
++                    playlistNames=library.playlists()
++                    // A newly created playlist is pre-checked, but video membership
++                    // is not written until the user explicitly presses Done.
++                    if(returnToPicker!=null) playlistSelection=playlistSelection+name
++                    newPlaylistName=""
++                    playlistDialog=false
++                    playlistCreateFor=null
++                    addToPlaylist=returnToPicker
+                 } else notice="Choose a unique playlist name"
+             },shape=RoundedCornerShape(50.dp)){Text("Create",modifier=Modifier.padding(horizontal=14.dp))}},
+-            dismissButton={TextButton(onClick={playlistDialog=false;playlistCreateFor=null}){Text("Cancel",color=Muted)}})
++            dismissButton={TextButton(onClick={
++                addToPlaylist=playlistCreateFor
++                playlistCreateFor=null
++                playlistDialog=false
++                newPlaylistName=""
++            }){Text("Cancel",color=Muted)}})
+         if(importingPlaylist) AlertDialog(
+             onDismissRequest={},shape=RoundedCornerShape(26.dp),
+             title={Text("Importing videos",fontWeight=FontWeight.Bold)},
+@@ -2385,7 +2406,7 @@
+                 Text("Adding selected files to your device and playlist. Please wait.")
+             }},confirmButton={}
+         )
+-        videoMenu?.takeUnless { addToPlaylist!=null || (playlistDialog && playlistCreateFor!=null) }?.let { video ->
++        videoMenu?.let { video ->
+             ModalBottomSheet(onDismissRequest={videoMenu=null},
+                 shape=RoundedCornerShape(topStart=28.dp,topEnd=28.dp),
+                 containerColor=MaterialTheme.colorScheme.surface) {
+@@ -2409,7 +2430,14 @@
+                         // Keep the video-options bottom sheet open and show the new heart state.
+                     }
+                     SheetAction(Icons.Default.PlaylistAdd,"Add to playlist",Accent) {
+-                        addToPlaylist=video // picker overlays the menu; returns here when dismissed
++                        // Close the options sheet first; do not stack a dialog over it.
++                        // Precheck every playlist that already contains this video.
++                        playlistNames=library.playlists()
++                        playlistSelection=playlistNames.filter { name ->
++                            video.id.toString() in library.playlistItems(name)
++                        }.toSet()
++                        videoMenu=null
++                        addToPlaylist=video
+                     }
+                     SheetAction(Icons.Default.Share,"Share",Color(0xFF0D9488)) {
+                         val share=Intent(Intent.ACTION_SEND).apply {
+@@ -2438,13 +2466,18 @@
+         }
+ 
+         addToPlaylist?.let { video -> AlertDialog(
+-            onDismissRequest={addToPlaylist=null},shape=RoundedCornerShape(28.dp),
++            onDismissRequest={addToPlaylist=null;playlistSelection=emptySet()},
++            shape=RoundedCornerShape(28.dp),
+             title={Text("Add to playlist",fontWeight=FontWeight.ExtraBold,fontSize=23.sp)},
+             text={Column(Modifier.heightIn(max=390.dp).verticalScroll(rememberScrollState()),
+                 verticalArrangement=Arrangement.spacedBy(9.dp)) {
+                 Text(video.title,maxLines=2,overflow=TextOverflow.Ellipsis,color=Muted,fontSize=13.sp)
++                Text("Select playlists, then tap Done to save.",fontSize=12.sp,color=Muted)
+                 Surface(shape=RoundedCornerShape(14.dp),color=MaterialTheme.colorScheme.primaryContainer.copy(alpha=.45f),modifier=Modifier.fillMaxWidth().clickable{
+-                    playlistCreateFor=video;newPlaylistName="";addToPlaylist=null;playlistDialog=true
++                    playlistCreateFor=video
++                    newPlaylistName=""
++                    addToPlaylist=null
++                    playlistDialog=true
+                 }) {
+                     Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically) {
+                         Icon(Icons.Default.AddCircleOutline,"Create playlist",tint=Accent)
+@@ -2452,15 +2485,42 @@
+                     }
+                 }
+                 playlistNames.forEach { name ->
+-                    val already=video.id.toString() in library.playlistItems(name)
+-                    Surface(shape=RoundedCornerShape(12.dp),color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),modifier=Modifier.fillMaxWidth().clickable{
+-                        library.addToPlaylist(name,video.id);addToPlaylist=null
+-                    }) {Row(Modifier.padding(13.dp),verticalAlignment=Alignment.CenterVertically) {
+-                        Icon(Icons.Default.PlaylistPlay,null,tint=Accent);Spacer(Modifier.width(10.dp))
+-                        Text(name,Modifier.weight(1f),maxLines=1);if(already)Icon(Icons.Default.Check,null,tint=Accent)
+-                    }}
+-                }
+-            }},confirmButton={TextButton(onClick={addToPlaylist=null}){Text("Done")}}
++                    val checked=name in playlistSelection
++                    Surface(
++                        shape=RoundedCornerShape(12.dp),
++                        color=if(checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha=.52f)
++                              else MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),
++                        modifier=Modifier.fillMaxWidth().clickable {
++                            playlistSelection=if(checked) playlistSelection-name else playlistSelection+name
++                        }
++                    ) {
++                        Row(Modifier.padding(horizontal=13.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically) {
++                            Icon(Icons.Default.PlaylistPlay,null,tint=Accent)
++                            Spacer(Modifier.width(10.dp))
++                            Text(name,Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis)
++                            // Checkbox visually reflects the temporary selection; its parent
++                            // row handles clicks so one tap always toggles exactly once.
++                            Checkbox(checked=checked,onCheckedChange=null)
++                        }
++                    }
++                }
++            }},
++            confirmButton={TextButton(onClick={
++                // Atomically from the user's perspective: apply only on Done,
++                // including removals from previously checked playlists.
++                playlistNames.forEach { name ->
++                    val isMember=video.id.toString() in library.playlistItems(name)
++                    val shouldBeMember=name in playlistSelection
++                    if(shouldBeMember && !isMember) library.addToPlaylist(name,video.id)
++                    if(!shouldBeMember && isMember) library.removeFromPlaylist(name,video.id)
++                }
++                addToPlaylist=null
++                playlistSelection=emptySet()
++            }){Text("Done")}},
++            dismissButton={TextButton(onClick={
++                addToPlaylist=null
++                playlistSelection=emptySet()
++            }){Text("Cancel",color=Muted)}}
+         ) }
+         confirmPlaylistDelete?.let { name -> AlertDialog(
+             onDismissRequest={confirmPlaylistDelete=null},shape=RoundedCornerShape(24.dp),

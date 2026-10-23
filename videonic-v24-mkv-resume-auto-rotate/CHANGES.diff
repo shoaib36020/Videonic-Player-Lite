@@ -1,0 +1,302 @@
+--- v23/MainActivity.kt
++++ v24/MainActivity.kt
+@@ -276,13 +276,41 @@
+             image.recycle()
+         },Handler(Looper.getMainLooper()))
+     }
++    // When an MKV cannot seek at startup, its temporary playback at 00:00 must
++    // never replace the user's saved bookmark. This guard also covers onStop.
++    fun protectMkvResume(mediaId:Long, targetMs:Long, isMkv:Boolean) {
++        val prefs=getSharedPreferences("videonic",MODE_PRIVATE)
++        prefs.edit().apply {
++            remove("mkv_resume_guard_id")
++            remove("mkv_resume_guard_ms")
++            if(isMkv && targetMs>=1000L) {
++                putLong("mkv_resume_guard_id",mediaId)
++                putLong("mkv_resume_guard_ms",targetMs)
++            }
++        }.apply()
++    }
++    fun clearMkvResumeGuard() {
++        getSharedPreferences("videonic",MODE_PRIVATE).edit()
++            .remove("mkv_resume_guard_id").remove("mkv_resume_guard_ms").apply()
++    }
++    fun canSavePlaybackPosition(mediaId:Long, actual:Long):Boolean {
++        if(actual<=0L || actual==C.TIME_UNSET) return false
++        val prefs=getSharedPreferences("videonic",MODE_PRIVATE)
++        if(prefs.getLong("mkv_resume_guard_id",-1L)==mediaId) {
++            val target=prefs.getLong("mkv_resume_guard_ms",0L)
++            // A confirmed jump close to the bookmark releases the protection.
++            if(actual+2500L<target) return false
++            clearMkvResumeGuard()
++        }
++        return true
++    }
+     // Save the real Media3 position when Android backgrounds the Activity. The
+     // Compose position display may be stale (or still zero) during a transition.
+     private fun saveActivePlaybackPosition() {
+         val player=controller.value ?: return
+         val mediaId=player.currentMediaItem?.mediaId?.toLongOrNull() ?: return
+         val actual=player.currentPosition
+-        if(actual>0L && actual!=C.TIME_UNSET) {
++        if(canSavePlaybackPosition(mediaId,actual)) {
+             getSharedPreferences("videonic",MODE_PRIVATE).edit()
+                 .putLong("pos_$mediaId", actual).apply()
+         }
+@@ -372,6 +400,7 @@
+     // Resume is immediate. Offer an optional bottom action AFTER playback starts;
+     // never block video opening with an AlertDialog.
+     var restartPromptVideoId by remember { mutableStateOf<String?>(null) }
++    var restartPromptTargetMs by remember { mutableLongStateOf(0L) }
+     var restartPromptVisible by remember { mutableStateOf(false) }
+     // Explicit Resume requests get one early, bounded verification once Media3
+     // has a timeline. This must never run for a fresh "Start over" playback.
+@@ -458,27 +487,43 @@
+             playerSurfaceEpoch++
+         }
+     }
+-    // Manual Fullscreen is a deliberate LANDSCAPE lock, even if Android's
+-    // Auto-rotate switch is off. Do not release this lock on rotation.
+-    // Without a manual Fullscreen press, follow the user's system Auto-rotate
+-    // preference when the app's Auto-rotate setting is enabled.
+-    // Explicit Exit Fullscreen returns portrait until playback is closed.
++    // Rotation priority: playback Lock > manual Fullscreen/Exit > in-app Auto rotate.
++    // Videonic Auto rotate ON follows the physical sensor, even if Android's
++    // global Auto-rotate toggle is OFF. OFF freezes the current display angle.
++    // Manual Fullscreen holds landscape until Exit; Exit holds portrait so the
++    // phone cannot immediately bounce back when it is still held sideways.
+     LaunchedEffect(playerExpanded,autoRotate,forcedPlayerOrientation,lockPlayer) {
+         if(playerExpanded) {
+-            // Freeze the actual on-screen rotation (including reverse landscape)
+-            // while playback controls are locked. This overrides BOTH the
+-            // app's Auto-rotate preference and the phone's rotation setting.
+-            activity.requestedOrientation=if(lockPlayer)
+-                ActivityInfo.SCREEN_ORIENTATION_LOCKED
+-            else when(forcedPlayerOrientation) {
+-                "portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+-                "landscape" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+-                else -> if(autoRotate) ActivityInfo.SCREEN_ORIENTATION_USER
+-                    else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
++            activity.requestedOrientation=when {
++                lockPlayer -> ActivityInfo.SCREEN_ORIENTATION_LOCKED
++                forcedPlayerOrientation=="landscape" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
++                forcedPlayerOrientation=="portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
++                autoRotate -> ActivityInfo.SCREEN_ORIENTATION_SENSOR
++                else -> ActivityInfo.SCREEN_ORIENTATION_LOCKED
+             }
+         } else {
++            activity.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+             forcedPlayerOrientation=null
+         }
++    }
++    // Exit Fullscreen should first show portrait, NOT immediately bounce back
++    // to landscape while the device is held sideways. Once the phone actually
++    // returns upright, release that temporary portrait override so in-app
++    // Auto rotate works again in either direction. Playback Lock takes priority.
++    DisposableEffect(playerExpanded,autoRotate,forcedPlayerOrientation,lockPlayer) {
++        val sensorListener=if(playerExpanded && autoRotate && !lockPlayer &&
++            forcedPlayerOrientation=="portrait") {
++            object: android.view.OrientationEventListener(context) {
++                override fun onOrientationChanged(degrees:Int) {
++                    if(degrees!=android.view.OrientationEventListener.ORIENTATION_UNKNOWN &&
++                        (degrees<=35 || degrees>=325 || degrees in 145..215)) {
++                        forcedPlayerOrientation=null
++                    }
++                }
++            }
++        } else null
++        if(sensorListener?.canDetectOrientation()==true) sensorListener.enable()
++        onDispose { sensorListener?.disable() }
+     }
+     // Use Android's immersive video mode; orientation alone does not hide the
+     // notifications/status bar. Restore the system UI when leaving the player.
+@@ -568,12 +613,15 @@
+         val epoch=playerOpenEpoch
+         restartPromptVisible=false
+         if(!playerExpanded) return@LaunchedEffect
+-        repeat(50) {
++        // Give the async MKV seek index time to recover, but never show a
++        // misleading Start from Beginning banner over a 00:00 restart.
++        repeat(200) {
+             if(epoch!=playerOpenEpoch || !playerExpanded ||
+                 restartPromptVideoId!=requestedId) return@LaunchedEffect
+             val player=controller
+             if(player?.currentMediaItem?.mediaId==requestedId &&
+-                player.playbackState==Player.STATE_READY && player.playWhenReady) {
++                player.playbackState==Player.STATE_READY && player.playWhenReady &&
++                player.currentPosition+2500L>=restartPromptTargetMs) {
+                 restartPromptVisible=true
+                 delay(5000L)
+                 if(epoch==playerOpenEpoch && restartPromptVideoId==requestedId) {
+@@ -599,8 +647,10 @@
+             Bundle.EMPTY)
+     }
+     LaunchedEffect(playing?.id) { seekRecoveryBusy=false }
+-    fun requestSeek(target:Long) {
++    fun requestSeek(target:Long, resumeAttempt:Boolean=false, forceRecovery:Boolean=false) {
+         val mediaController=controller ?: return
++        // A user's manual seek overrides the old resume bookmark protection.
++        if(!resumeAttempt) activity.clearMkvResumeGuard()
+         val length=videoDurationFallback(mediaController,duration)
+         val safeTarget=if(length>0L) target.coerceIn(0L,length) else target.coerceAtLeast(0L)
+         val now=android.os.SystemClock.elapsedRealtime()
+@@ -617,7 +667,7 @@
+         }
+         pendingSeekTarget=safeTarget
+         pendingSeekDeadline=now+if(seekCommand) 5000L else 9000L
+-        if(seekCommand) {
++        if(seekCommand && !forceRecovery) {
+             if(decoderBusy) { pendingSeekTarget=null; return }
+             if(seekRecoveryBusy) {
+                 // Stop an earlier unseekable-parser trial before a newer native
+@@ -713,26 +763,56 @@
+         }
+         queuedStartupSeek=null
+     }
+-    // For a genuine Resume choice, verify the starting position ONCE and only
+-    // in the first few seconds of playback. Do not schedule a delayed seek that
+-    // would unexpectedly jump after playback is already underway.
++    // Resume must be checked after the MKV seek map has become available.
++    // Some files have no cues or a broken index: requesting an initial position
++    // alone can silently reset to 00:00. Use the existing service's MKV index
++    // recovery ONCE at startup, then leave playback alone if recovery fails.
++    // Saved history remains protected in that case, even across onStop.
+     LaunchedEffect(controller,resumeStartRequest,playerOpenEpoch) {
+         val request=resumeStartRequest ?: return@LaunchedEffect
+-        repeat(60) {
++        val openEpoch=playerOpenEpoch
++        repeat(100) {
+             val player=controller ?: return@LaunchedEffect
++            if(playerOpenEpoch!=openEpoch ||
++                playing?.id?.toString()!=request.first) return@LaunchedEffect
+             if(player.currentMediaItem?.mediaId==request.first &&
+                 player.playbackState==Player.STATE_READY) {
+-                if(player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) &&
+-                    player.currentPosition+1800L<request.second) {
+-                    player.seekTo(request.second)
++                val mkv=playing?.title?.endsWith(".mkv",ignoreCase=true)==true ||
++                    player.currentMediaItem?.localConfiguration?.uri
++                        ?.lastPathSegment?.endsWith(".mkv",ignoreCase=true)==true
++                if(player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) {
++                    if(player.currentPosition+2500L<request.second)
++                        player.seekTo(request.second)
++                    // Even seekable-looking MKVs can jump back to zero if their
++                    // cue table is invalid. Check once, early, before giving up.
++                    if(mkv && request.second>=10000L) {
++                        for(i in 0 until 18) {
++                            delay(150L)
++                            if(playerOpenEpoch!=openEpoch ||
++                                player.currentMediaItem?.mediaId!=request.first)
++                                return@LaunchedEffect
++                            if(player.playbackState==Player.STATE_READY &&
++                                player.currentPosition>=request.second-5000L) break
++                        }
++                        if(player.playbackState==Player.STATE_READY &&
++                            player.currentPosition<5000L &&
++                            player.currentPosition+5000L<request.second) {
++                            android.util.Log.i("VideonicTimeline",
++                                "MKV resumed near zero; requesting index recovery at ${request.second}ms")
++                            requestSeek(request.second,resumeAttempt=true,forceRecovery=true)
++                        }
++                    }
++                } else if(mkv) {
++                    android.util.Log.i("VideonicTimeline",
++                        "Unseekable MKV startup; requesting index recovery at ${request.second}ms")
++                    requestSeek(request.second,resumeAttempt=true,forceRecovery=true)
+                 }
+                 resumeStartRequest=null
+                 return@LaunchedEffect
+             }
+             delay(100L)
+         }
+-        // With an unseekable MKV we must not chase a saved position by rebuilding
+-        // a player late; keep playing rather than causing an unexpected jump.
++        // No ready timeline within 10s: do not seek unexpectedly during playback.
+         resumeStartRequest=null
+     }
+     val permission = if(Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
+@@ -913,7 +993,9 @@
+         pendingSeekTarget=null
+         resumeStartRequest=if(startAt>=1000L) (video.id.toString() to startAt) else null
+         restartPromptVideoId=if(startAt>=1000L) video.id.toString() else null
++        restartPromptTargetMs=startAt.coerceAtLeast(0L)
+         restartPromptVisible=false
++        activity.protectMkvResume(video.id,startAt,video.title.endsWith(".mkv",ignoreCase=true))
+         // Headphone mode must be deliberately enabled for each opened video.
+         backgroundAudio=false
+         appPrefs.edit().putBoolean("background_audio_enabled",false).apply()
+@@ -994,8 +1076,8 @@
+         val liveId=controller?.currentMediaItem?.mediaId
+         val livePosition=controller?.currentPosition ?: 0L
+         playing?.takeIf { it.id.toString()==liveId }?.let { current ->
+-            if(livePosition>0L && livePosition!=C.TIME_UNSET)
+-                library.savePosition(current.id, livePosition)
++            if(activity.canSavePlaybackPosition(current.id,livePosition))
++                library.savePosition(current.id,livePosition)
+         }
+         controller?.stop(); controller?.clearMediaItems()
+         if(playing?.folder == "Private") PrivateVault(context).cleanPlaybackCache()
+@@ -1014,7 +1096,7 @@
+                     if(!isPlaying && resumeStartRequest==null) {
+                         val id=controller.currentMediaItem?.mediaId?.toLongOrNull()
+                         val actual=controller.currentPosition
+-                        if(id!=null && actual>0L && actual!=C.TIME_UNSET)
++                        if(id!=null && activity.canSavePlaybackPosition(id,actual))
+                             library.savePosition(id,actual)
+                     }
+                 }
+@@ -1066,7 +1148,10 @@
+                 controller.currentMediaItem?.mediaId==playing?.id?.toString()) {
+                 val now=android.os.SystemClock.elapsedRealtime()
+                 if(now-lastPositionSaveAt>=2000L) {
+-                    playing?.let { library.savePosition(it.id,actual) }
++                    playing?.let {
++                        if(activity.canSavePlaybackPosition(it.id,actual))
++                            library.savePosition(it.id,actual)
++                    }
+                     lastPositionSaveAt=now
+                 }
+             }
+@@ -1094,7 +1179,8 @@
+                 val activeId=controller?.currentMediaItem?.mediaId
+                 val actual=controller?.currentPosition ?: 0L
+                 playing?.takeIf{it.id.toString()==activeId}?.let {
+-                    if(actual>0L && actual!=C.TIME_UNSET) library.savePosition(it.id,actual)
++                    if(activity.canSavePlaybackPosition(it.id,actual))
++                        library.savePosition(it.id,actual)
+                 }
+                 cancelOldSeekRecovery();playerExpanded=false; isFullscreen=false; speedDialog=false; aspectIndex=0; scrubbing=false
+                 restartPromptVideoId=null;restartPromptVisible=false
+@@ -1578,9 +1664,6 @@
+                                 // Rotate using actual window orientation; update icon after Android
+                                 // delivers the configuration change, not optimistically on click.
+                                 forcedPlayerOrientation=if(landscape) "portrait" else "landscape"
+-                                activity.requestedOrientation=if(landscape)
+-                                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+-                                else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                 controlTick++
+                             }
+                         }
+@@ -1611,6 +1694,7 @@
+                                 resumeStartRequest=null
+                                 if(video!=null) {
+                                     cancelOldSeekRecovery()
++                                    activity.clearMkvResumeGuard()
+                                     library.savePosition(video.id,0L)
+                                     val player=controller
+                                     if(player?.currentMediaItem?.mediaId==video.id.toString() &&
+@@ -1955,11 +2039,9 @@
+                                 onSpeed={settingsSpeedDialog="speed"},
+                                 onSeek={settingsSpeedDialog="seek"},
+                                 onAutoRotate={autoRotate=it;library.setAutoRotate(it);
+-                                    forcedPlayerOrientation=null
+-                                    // Do not bypass a locked screen's rotation freeze.
+-                                    // USER respects the phone's own rotation switch.
+-                                    if(playerExpanded && !lockPlayer)
+-                                        activity.requestedOrientation=if(it) ActivityInfo.SCREEN_ORIENTATION_USER else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED},
++                                    // The orientation effect applies this preference only
++                                    // when neither Lock nor a manual Fullscreen override is active.
++                                },
+                                 onKeepScreenOn={keepScreenOn=it;library.setKeepScreenOn(it);
+                                     if(playerExpanded) {
+                                         if(it) activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

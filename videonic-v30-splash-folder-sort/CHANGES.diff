@@ -1,0 +1,144 @@
+--- v29/MainActivity.kt
++++ v30/MainActivity.kt
+@@ -359,6 +359,7 @@
+     var playerExpanded by remember { mutableStateOf(false) }
+     var query by remember { mutableStateOf("") }
+     var sort by remember { mutableStateOf(appPrefs.getString("video_sort", "Newest") ?: "Newest") }
++    var folderVideoSort by remember { mutableStateOf(appPrefs.getString("folder_video_sort", "Newest") ?: "Newest") }
+     var sortDialog by remember { mutableStateOf(false) }
+     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+     var pendingTrash by remember { mutableStateOf<List<LocalVideo>>(emptyList()) }
+@@ -383,6 +384,7 @@
+     var folderDescending by remember { mutableStateOf(appPrefs.getBoolean("folder_sort_descending", false)) }
+     var folderSortField by remember { mutableStateOf(appPrefs.getString("folder_sort_field", "Name") ?: "Name") }
+     LaunchedEffect(sort) { appPrefs.edit().putString("video_sort", sort).apply() }
++    LaunchedEffect(folderVideoSort) { appPrefs.edit().putString("folder_video_sort", folderVideoSort).apply() }
+     LaunchedEffect(folderSortField,folderDescending) {
+         appPrefs.edit().putString("folder_sort_field",folderSortField)
+             .putBoolean("folder_sort_descending",folderDescending).apply()
+@@ -485,6 +487,18 @@
+     // A long-press + upward swipe pins the chosen speed until explicitly unlocked.
+     var speedLockedAt by remember { mutableStateOf<Float?>(null) }
+     var speedBeforeLock by remember { mutableFloatStateOf(defaultSpeed) }
++    // Speed remains locked when the chip fades away. Tap the video to reveal
++    // it again for three seconds; tapping the chip restores the prior speed.
++    var speedLockChipVisible by remember { mutableStateOf(false) }
++    var speedLockChipTick by remember { mutableIntStateOf(0) }
++    LaunchedEffect(speedLockedAt, speedLockChipTick, playerExpanded) {
++        if (!playerExpanded || speedLockedAt == null) {
++            speedLockChipVisible=false
++        } else if (speedLockChipVisible) {
++            delay(3000L)
++            speedLockChipVisible=false
++        }
++    }
+     var overflowOpen by remember { mutableStateOf(false) }
+     var backgroundAudio by remember {
+         mutableStateOf(appPrefs.getBoolean("background_audio_enabled", false))
+@@ -1424,6 +1438,10 @@
+                                                         } else {
+                                                             lastTapAt=down.uptimeMillis;lastTapX=startX
+                                                             controlsVisible=!controlsVisible;controlTick++
++                                                            if(speedLockedAt!=null) {
++                                                                speedLockChipVisible=true
++                                                                speedLockChipTick++
++                                                            }
+                                                         }
+                                                     }
+                                                 }
+@@ -1449,6 +1467,8 @@
+                                                             lockedDuringGesture=true
+                                                             speedBeforeLock=originalSpeed
+                                                             speedLockedAt=chosenSpeed
++                                                            speedLockChipVisible=true
++                                                            speedLockChipTick++
+                                                             speed=chosenSpeed
+                                                             controller?.setPlaybackSpeed(chosenSpeed)
+                                                             holdSpeedActive=false
+@@ -1547,24 +1567,30 @@
+                         }
+                     }
+                 }
+-                if(!inPip && !lockPlayer && speedLockedAt!=null && !holdSpeedActive) {
++                if(!inPip && !lockPlayer && speedLockedAt!=null &&
++                    !holdSpeedActive && speedLockChipVisible) {
++                    // Short-lived, compact speed-lock chip. Playback speed is
++                    // NOT changed by its 3-second auto-hide.
+                     Surface(
+                         modifier=Modifier.align(Alignment.TopCenter).statusBarsPadding()
+-                            .padding(top=70.dp).clickable {
++                            .padding(top=if(landscape) 16.dp else 78.dp)
++                            .clickable(onClickLabel="Reset locked speed") {
+                                 controller?.setPlaybackSpeed(speedBeforeLock)
+                                 speed=speedBeforeLock
+                                 speedLockedAt=null
++                                speedLockChipVisible=false
+                                 controlsVisible=true;controlTick++
+                             },
+-                        shape=RoundedCornerShape(100),color=Color(0xF01E293B),
+-                        border=BorderStroke(1.dp,Accent.copy(alpha=.8f))
++                        shape=RoundedCornerShape(100),color=Color(0xEE1E293B),
++                        border=BorderStroke(.7.dp,Accent.copy(alpha=.75f))
+                     ) {
+-                        Row(Modifier.padding(horizontal=13.dp,vertical=9.dp),
++                        Row(Modifier.padding(horizontal=10.dp,vertical=6.dp),
+                             verticalAlignment=Alignment.CenterVertically,
+-                            horizontalArrangement=Arrangement.spacedBy(7.dp)) {
+-                            Icon(Icons.Default.Lock,null,tint=Color(0xFF93C5FD),modifier=Modifier.size(15.dp))
+-                            Text("${speedLabel(speedLockedAt!!)}x locked · Tap to unlock",
+-                                color=Color.White,fontSize=12.sp,fontWeight=FontWeight.Bold)
++                            horizontalArrangement=Arrangement.spacedBy(5.dp)) {
++                            Icon(Icons.Default.Lock,null,tint=Color(0xFF93C5FD),modifier=Modifier.size(12.dp))
++                            Text("${speedLabel(speedLockedAt!!)}x locked · Reset",
++                                color=Color.White,fontSize=10.sp,fontWeight=FontWeight.SemiBold,
++                                maxLines=1)
+                         }
+                     }
+                 }
+@@ -1841,6 +1867,7 @@
+                     selected=speed,
+                     onChoose={ value ->
+                         speedLockedAt=null
++                        speedLockChipVisible=false
+                         speedBeforeLock=value
+                         speed=value
+                         controller?.setPlaybackSpeed(value)
+@@ -2225,7 +2252,11 @@
+                             "Recent"-> recent.mapNotNull{id->videos.find{it.id.toString()==id}}
+                             "Folders"-> videos.filter{it.folder==folder}
+                             else-> videos
+-                        }.filter{it.title.contains(query,true)}.let{if(tab=="Recent" && sort=="Newest")it else it.sortedWith(videoComparator(sort))}
++                        }.filter{it.title.contains(query,true)}.let { items ->
++                            val activeSort=if(tab=="Folders" && folder!=null) folderVideoSort else sort
++                            if(tab=="Recent" && activeSort=="Newest") items
++                            else items.sortedWith(videoComparator(activeSort))
++                        }
+ 
+ 
+                         // Keep scroll states alive while toggling Videos list and grid.
+@@ -2493,16 +2524,20 @@
+         }
+         if(sortDialog) SortAndViewBottomSheet(
+             isFolders=(tab=="Folders" && folder==null),
+-            videoSort=sort,
++            videoSort=if(tab=="Folders" && folder!=null) folderVideoSort else sort,
+             folderSort=folderSortField,
+             folderDescending=folderDescending,
+-            grid=if(tab=="Folders" && folder==null) folderGrid else grid,
+-            onVideoSort={sort=it},
++            grid=if(tab=="Folders") folderGrid else grid,
++            onVideoSort={chosen ->
++                if(tab=="Folders" && folder!=null) folderVideoSort=chosen
++                else sort=chosen
++            },
+             onFolderSort={folderSortField=it},
+             onFolderDescending={folderDescending=it},
+             onGrid={requested ->
+-                if(tab=="Folders" && folder==null) {
+-                    folderGrid=requested;appPrefs.edit().putBoolean("folder_grid_view",requested).apply()
++                if(tab=="Folders") {
++                    folderGrid=requested
++                    appPrefs.edit().putBoolean("folder_grid_view",requested).apply()
+                 } else { grid=requested;library.setGrid(requested) }
+             },
+             onDismiss={sortDialog=false}

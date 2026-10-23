@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+<style name="VideonicLaunchV26" parent="@style/Theme.Videonic">
+  <item name="android:windowBackground">@drawable/videonic_launch_v26</item>
+  <item name="android:windowSplashScreenBackground">#FFFFFF</item>
+  <item name="android:windowSplashScreenAnimatedIcon">@drawable/videonic_brand</item>
+  <item name="android:windowSplashScreenBrandingImage">@drawable/videonic_splash_name_v27</item>
+</style>
+</resources>

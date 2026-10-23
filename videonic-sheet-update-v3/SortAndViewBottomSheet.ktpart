@@ -1,0 +1,94 @@
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SortAndViewBottomSheet(
+    isFolders:Boolean,
+    videoSort:String,
+    folderSort:String,
+    folderDescending:Boolean,
+    grid:Boolean,
+    onVideoSort:(String)->Unit,
+    onFolderSort:(String)->Unit,
+    onFolderDescending:(Boolean)->Unit,
+    onGrid:(Boolean)->Unit,
+    onDismiss:()->Unit
+) {
+    val field = if(isFolders) folderSort else when(videoSort) {
+        "Name A-Z", "Name Z-A" -> "Name"
+        "Largest", "Smallest" -> "Size"
+        "Longest", "Shortest" -> "Duration"
+        else -> "Date added"
+    }
+    val descending = if(isFolders) folderDescending else when(videoSort) {
+        "Name A-Z", "Smallest", "Shortest", "Oldest" -> false
+        else -> true
+    }
+    fun update(fieldName:String,desc:Boolean) {
+        if(isFolders) {
+            onFolderSort(fieldName)
+            onFolderDescending(desc)
+        } else {
+            onVideoSort(when(fieldName) {
+                "Name" -> if(desc) "Name Z-A" else "Name A-Z"
+                "Size" -> if(desc) "Largest" else "Smallest"
+                "Duration" -> if(desc) "Longest" else "Shortest"
+                else -> if(desc) "Newest" else "Oldest"
+            })
+        }
+    }
+    ModalBottomSheet(
+        onDismissRequest=onDismiss,
+        shape=RoundedCornerShape(topStart=30.dp,topEnd=30.dp),
+        containerColor=MaterialTheme.colorScheme.surface,
+        dragHandle={BottomSheetDefaults.DragHandle()}
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal=24.dp).navigationBarsPadding()
+                .verticalScroll(rememberScrollState()).padding(bottom=22.dp)
+        ) {
+            Text("Sort by",fontSize=26.sp,fontWeight=FontWeight.ExtraBold,
+                color=MaterialTheme.colorScheme.onSurface,modifier=Modifier.padding(bottom=12.dp))
+            listOf("Name","Date added","Size","Duration").forEach { option ->
+                Row(Modifier.fillMaxWidth().height(51.dp).clickable{update(option,descending)},
+                    verticalAlignment=Alignment.CenterVertically) {
+                    Text(option,Modifier.weight(1f),fontWeight=if(field==option)FontWeight.Bold else FontWeight.Normal,
+                        color=if(field==option)Accent else MaterialTheme.colorScheme.onSurface,fontSize=16.sp)
+                    if(field==option) Icon(Icons.Default.Check,"Selected",tint=Accent,modifier=Modifier.size(23.dp))
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text("ORDER",color=Muted,fontWeight=FontWeight.Bold,fontSize=12.sp)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                .background(Color(0xFFF0F2F6)).padding(5.dp)) {
+                listOf(false to "Ascending",true to "Descending").forEach { (desc,label) ->
+                    Surface(shape=RoundedCornerShape(16.dp),
+                        color=if(descending==desc)Color.White else Color.Transparent,
+                        shadowElevation=if(descending==desc)2.dp else 0.dp,
+                        modifier=Modifier.weight(1f).clickable{update(field,desc)}) {
+                        Box(Modifier.height(45.dp),contentAlignment=Alignment.Center) {
+                            Text(label,fontWeight=FontWeight.Bold,fontSize=14.sp,
+                                color=if(descending==desc)Ink else Muted)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+            Text("VIEW",color=Muted,fontWeight=FontWeight.Bold,fontSize=12.sp)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                .background(Color(0xFFF0F2F6)).padding(5.dp)) {
+                listOf(false to "List",true to "Grid").forEach { (isGrid,label) ->
+                    Surface(shape=RoundedCornerShape(16.dp),
+                        color=if(grid==isGrid)Color.White else Color.Transparent,
+                        shadowElevation=if(grid==isGrid)2.dp else 0.dp,
+                        modifier=Modifier.weight(1f).clickable{onGrid(isGrid)}) {
+                        Box(Modifier.height(45.dp),contentAlignment=Alignment.Center) {
+                            Text(label,fontWeight=FontWeight.Bold,fontSize=14.sp,
+                                color=if(grid==isGrid)Ink else Muted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

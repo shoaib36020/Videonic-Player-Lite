@@ -1,0 +1,256 @@
+--- v25/MainActivity.kt
++++ v26/MainActivity.kt
+@@ -127,6 +127,15 @@
+ private val Muted: Color
+     @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+ private val Speeds = listOf(.25f,.5f,.75f,1f,1.25f,1.5f,1.75f,2f,2.5f,3f,4f)
++// Only keep recently viewed thumbnail bitmaps; Android's MediaStore stays the
++// authoritative source. This speeds subsequent scrolls without scanning files.
++private object VideoThumbnailCache {
++    private val cache=object: android.util.LruCache<String,Bitmap>(18*1024) {
++        override fun sizeOf(key:String,value:Bitmap):Int=(value.byteCount/1024).coerceAtLeast(1)
++    }
++    fun get(key:String):Bitmap?=cache.get(key)?.takeUnless { it.isRecycled }
++    fun put(key:String,bitmap:Bitmap) { if(!bitmap.isRecycled) cache.put(key,bitmap) }
++}
+ // A preference only: the active codec depends on the device, file, and available decoders.
+ private fun decoderModeLabel(mode:String):String=when(mode) {
+     "hardware" -> "Hardware preferred"
+@@ -336,7 +345,9 @@
+     val library = remember { LocalLibrary(context) }
+     val appPrefs=remember { context.getSharedPreferences("videonic", Context.MODE_PRIVATE) }
+     var launchBrandVisible by remember { mutableStateOf(true) }
+-    LaunchedEffect(Unit) { delay(620); launchBrandVisible=false }
++    // The native Android starting window already displays the brand icon.
++    // Keep Compose's matching screen only briefly; never impose a 620ms wait.
++    LaunchedEffect(Unit) { delay(220); launchBrandVisible=false }
+     var videos by remember { mutableStateOf<List<LocalVideo>>(emptyList()) }
+     var loading by remember { mutableStateOf(true) }
+     var scanError by remember { mutableStateOf<String?>(null) }
+@@ -358,6 +369,10 @@
+     var renameText by remember { mutableStateOf("") }
+     var renameAfterConsent by remember { mutableStateOf<Pair<LocalVideo,String>?>(null) }
+     var bulkPlaylist by remember { mutableStateOf(false) }
++    // All-or-none overrides for bulk memberships. Unmodified, partially selected
++    // playlists remain untouched, preserving each video's original membership.
++    var bulkPlaylistEdits by remember { mutableStateOf<Map<String,Boolean>>(emptyMap()) }
++    var bulkPlaylistCreateReturn by remember { mutableStateOf(false) }
+     var feedbackType by remember { mutableStateOf("Bug report") }
+     var feedbackMessage by remember { mutableStateOf("") }
+     var grid by remember { mutableStateOf(library.grid()) }
+@@ -493,13 +508,17 @@
+     // Rotation priority: playback Lock > manual Fullscreen/Exit > in-app Auto rotate.
+     // Videonic Auto rotate ON follows the physical sensor, even if Android's
+     // global Auto-rotate toggle is OFF. OFF freezes the current display angle.
+-    // Manual Fullscreen holds landscape until Exit; Exit holds portrait so the
++    // Manual Fullscreen permits both landscape sides until Exit, but not portrait.
++    // Exit holds portrait so the
+     // phone cannot immediately bounce back when it is still held sideways.
+     LaunchedEffect(playerExpanded,autoRotate,forcedPlayerOrientation,lockPlayer) {
+         if(playerExpanded) {
+             activity.requestedOrientation=when {
+                 lockPlayer -> ActivityInfo.SCREEN_ORIENTATION_LOCKED
+-                forcedPlayerOrientation=="landscape" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
++                // Sensor-landscape rotates between LEFT and RIGHT landscape, but
++                // will never enter portrait. Unlike plain LANDSCAPE it also works
++                // when Android system Auto-rotate is disabled.
++                forcedPlayerOrientation=="landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                 forcedPlayerOrientation=="portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                 autoRotate -> ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                 else -> ActivityInfo.SCREEN_ORIENTATION_LOCKED
+@@ -1968,10 +1987,23 @@
+                                 }
+                                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                     SelectionAction("Favorite",Icons.Default.Favorite,Modifier.weight(1f)) {
+-                                        chosen.forEach { if(it.id.toString() !in library.favorites()) library.toggleFavorite(it.id) }
++                                        val already=favorites
++                                        val added=chosen.count { it.id.toString() !in already }
++                                        chosen.forEach { if(it.id.toString() !in already) library.toggleFavorite(it.id) }
+                                         favorites=library.favorites();selectedIds=emptySet()
++                                        // Confirmation must be visible without interrupting the library.
++                                        val message=when {
++                                            added==0 -> "Already in Favorites"
++                                            added==1 -> "1 video added to Favorites"
++                                            else -> "$added videos added to Favorites"
++                                        }
++                                        Toast.makeText(context,message,Toast.LENGTH_SHORT).show()
+                                     }
+-                                    SelectionAction("Playlist",Icons.Default.PlaylistAdd,Modifier.weight(1f)) {bulkPlaylist=true}
++                                    SelectionAction("Playlist",Icons.Default.PlaylistAdd,Modifier.weight(1f)) {
++                                        playlistNames=library.playlists()
++                                        bulkPlaylistEdits=emptyMap()
++                                        bulkPlaylist=true
++                                    }
+                                 }
+                                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                     SelectionAction("Share",Icons.Default.Share,Modifier.weight(1f)) {
+@@ -2239,30 +2271,84 @@
+                 } else notice="Renaming in this build requires Android 11 or newer"
+             },shape=RoundedCornerShape(50.dp)){Text("Rename")}},dismissButton={TextButton(onClick={renameTarget=null}){Text("Cancel")}}
+         ) }
+-        if(bulkPlaylist) AlertDialog(onDismissRequest={bulkPlaylist=false},
++        if(bulkPlaylist) AlertDialog(
++            onDismissRequest={bulkPlaylist=false;bulkPlaylistEdits=emptyMap()},
+             shape=RoundedCornerShape(28.dp),
+             title={Text("Add to playlist",fontWeight=FontWeight.ExtraBold,fontSize=23.sp)},
+-            text={Column(Modifier.heightIn(max=370.dp).verticalScroll(rememberScrollState()),
+-                verticalArrangement=Arrangement.spacedBy(10.dp)) {
+-                Text("Save ${selectedIds.size} selected videos",color=Muted,fontSize=13.sp)
+-                if(playlistNames.isEmpty()) Text("Create a playlist from Me → Playlists first.",color=Muted)
++            text={Column(Modifier.heightIn(max=390.dp).verticalScroll(rememberScrollState()),
++                verticalArrangement=Arrangement.spacedBy(9.dp)) {
++                Text("${selectedIds.size} selected videos",color=Muted,fontSize=13.sp)
++                Text("Choose playlists, then tap Done to save.",fontSize=12.sp,color=Muted)
++                Surface(shape=RoundedCornerShape(14.dp),
++                    color=MaterialTheme.colorScheme.primaryContainer.copy(alpha=.45f),
++                    modifier=Modifier.fillMaxWidth().clickable {
++                        // Use the same Create dialog as the single-video picker.
++                        // Keep bulk edits in memory; do not save until Done.
++                        bulkPlaylist=false
++                        bulkPlaylistCreateReturn=true
++                        playlistCreateFor=null
++                        newPlaylistName=""
++                        playlistDialog=true
++                    }) {
++                    Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically) {
++                        Icon(Icons.Default.AddCircleOutline,"Create playlist",tint=Accent)
++                        Spacer(Modifier.width(10.dp))
++                        Text("Create new playlist",fontWeight=FontWeight.SemiBold)
++                    }
++                }
+                 playlistNames.forEach { name ->
+-                    Surface(shape=RoundedCornerShape(16.dp),
+-                        color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.48f),
++                    val members=library.playlistItems(name)
++                    val count=selectedIds.count { it.toString() in members }
++                    // null means some but not all videos are currently members.
++                    // An untouched mixed state is preserved on Done.
++                    val state=bulkPlaylistEdits[name] ?: when {
++                        count==selectedIds.size -> true
++                        count==0 -> false
++                        else -> null
++                    }
++                    Surface(shape=RoundedCornerShape(12.dp),
++                        color=if(state==true) MaterialTheme.colorScheme.primaryContainer.copy(alpha=.52f)
++                              else MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),
+                         modifier=Modifier.fillMaxWidth().clickable {
+-                            val selected=videos.filter{it.id in selectedIds}
+-                            selected.forEach {library.addToPlaylist(name,it.id)}
+-                            selectedIds=emptySet();bulkPlaylist=false
+-                            notice="${selected.size} videos added to $name"
++                            bulkPlaylistEdits=bulkPlaylistEdits+(name to (state!=true))
+                         }) {
+-                        Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){
+-                            Icon(Icons.Default.PlaylistPlay,null,tint=MaterialTheme.colorScheme.primary)
+-                            Spacer(Modifier.width(12.dp));Text(name,Modifier.weight(1f),fontWeight=FontWeight.SemiBold)
+-                            Icon(Icons.Default.ChevronRight,null,tint=Muted)
+-                        }
+-                    }
+-                }
+-            }},confirmButton={TextButton(onClick={bulkPlaylist=false}){Text("Close")}})
++                        Row(Modifier.padding(horizontal=13.dp,vertical=6.dp),
++                            verticalAlignment=Alignment.CenterVertically) {
++                            Icon(Icons.Default.PlaylistPlay,null,tint=Accent)
++                            Spacer(Modifier.width(10.dp))
++                            Text(name,Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis)
++                            if(state==null) {
++                                // Partial membership: tap to add all, then tap again
++                                // to remove all. The initial state itself changes nothing.
++                                Box(Modifier.size(48.dp),contentAlignment=Alignment.Center) {
++                                    Icon(Icons.Default.Remove,"Some selected videos",tint=Accent)
++                                }
++                            } else Checkbox(checked=state,onCheckedChange=null)
++                        }
++                    }
++                }
++            }},
++            confirmButton={TextButton(onClick={
++                val ids=selectedIds.toList()
++                bulkPlaylistEdits.forEach { (name, shouldInclude) ->
++                    val members=library.playlistItems(name)
++                    ids.forEach { id ->
++                        val included=id.toString() in members
++                        if(shouldInclude && !included) library.addToPlaylist(name,id)
++                        if(!shouldInclude && included) library.removeFromPlaylist(name,id)
++                    }
++                }
++                val count=ids.size
++                selectedIds=emptySet()
++                bulkPlaylistEdits=emptyMap()
++                bulkPlaylist=false
++                Toast.makeText(context,"Playlist selections saved for $count videos",Toast.LENGTH_SHORT).show()
++            }){Text("Done")}},
++            dismissButton={TextButton(onClick={
++                bulkPlaylist=false
++                bulkPlaylistEdits=emptyMap()
++            }){Text("Cancel",color=Muted)}}
++        )
+         deleteChoices.takeIf{it.isNotEmpty()}?.let { chosen ->
+             ModalBottomSheet(onDismissRequest={deleteChoices=emptyList()},
+                 shape=RoundedCornerShape(topStart=28.dp,topEnd=28.dp),
+@@ -2362,7 +2448,9 @@
+         )
+         if(playlistDialog) AlertDialog(
+             onDismissRequest={
+-                // The new-playlist editor returns to the same video picker on cancel.
++                // Return to the originating bulk or single-video picker.
++                if(bulkPlaylistCreateReturn) bulkPlaylist=true
++                bulkPlaylistCreateReturn=false
+                 addToPlaylist=playlistCreateFor
+                 playlistCreateFor=null
+                 playlistDialog=false
+@@ -2385,6 +2473,11 @@
+                     // A newly created playlist is pre-checked, but video membership
+                     // is not written until the user explicitly presses Done.
+                     if(returnToPicker!=null) playlistSelection=playlistSelection+name
++                    if(bulkPlaylistCreateReturn) {
++                        bulkPlaylistEdits=bulkPlaylistEdits+(name to true)
++                        bulkPlaylist=true
++                    }
++                    bulkPlaylistCreateReturn=false
+                     newPlaylistName=""
+                     playlistDialog=false
+                     playlistCreateFor=null
+@@ -2392,6 +2485,8 @@
+                 } else notice="Choose a unique playlist name"
+             },shape=RoundedCornerShape(50.dp)){Text("Create",modifier=Modifier.padding(horizontal=14.dp))}},
+             dismissButton={TextButton(onClick={
++                if(bulkPlaylistCreateReturn) bulkPlaylist=true
++                bulkPlaylistCreateReturn=false
+                 addToPlaylist=playlistCreateFor
+                 playlistCreateFor=null
+                 playlistDialog=false
+@@ -3028,10 +3123,13 @@
+ @Composable
+ private fun RecentVideoArtwork(video:LocalVideo,modifier:Modifier=Modifier) {
+     val context=LocalContext.current
+-    var thumbnail by remember(video.id) { mutableStateOf<Bitmap?>(null) }
++    val thumbnailKey="recent:${video.id}"
++    var thumbnail by remember(video.id) { mutableStateOf(VideoThumbnailCache.get(thumbnailKey)) }
+     LaunchedEffect(video.id) {
+-        thumbnail=withContext(Dispatchers.IO) {
+-            runCatching { context.contentResolver.loadThumbnail(video.uri,android.util.Size(600,500),null) }.getOrNull()
++        if(thumbnail==null) thumbnail=withContext(Dispatchers.IO) {
++            VideoThumbnailCache.get(thumbnailKey) ?: runCatching {
++                context.contentResolver.loadThumbnail(video.uri,android.util.Size(600,500),null)
++            }.getOrNull()?.also { VideoThumbnailCache.put(thumbnailKey,it) }
+         }
+     }
+     Box(modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF323341)),contentAlignment=Alignment.Center) {
+@@ -3325,10 +3423,13 @@
+     Box(modifier.clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.surfaceVariant),contentAlignment=Alignment.Center) {
+         // MediaStore thumbnail is loaded by the OS. A placeholder remains when thumbnails are unavailable.
+         val context=LocalContext.current
+-        var thumbnail by remember(video.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
++        val thumbnailKey="video:${video.id}"
++        var thumbnail by remember(video.id) { mutableStateOf(VideoThumbnailCache.get(thumbnailKey)) }
+         LaunchedEffect(video.id) {
+-            thumbnail=withContext(Dispatchers.IO) {
+-                runCatching { context.contentResolver.loadThumbnail(video.uri,android.util.Size(240,160),null) }.getOrNull()
++            if(thumbnail==null) thumbnail=withContext(Dispatchers.IO) {
++                VideoThumbnailCache.get(thumbnailKey) ?: runCatching {
++                    context.contentResolver.loadThumbnail(video.uri,android.util.Size(240,160),null)
++                }.getOrNull()?.also { VideoThumbnailCache.put(thumbnailKey,it) }
+             }
+         }
+         if(thumbnail!=null) Image(bitmap=thumbnail!!.asImageBitmap(),contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop)

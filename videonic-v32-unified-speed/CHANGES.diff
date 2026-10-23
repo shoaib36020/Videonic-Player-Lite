@@ -1,0 +1,130 @@
+--- v31/MainActivity.kt
++++ v32/MainActivity.kt
+@@ -486,11 +486,20 @@
+     var holdSpeedSelected by remember { mutableFloatStateOf(2f) }
+     // A long-press + upward swipe pins the chosen speed until explicitly unlocked.
+     var speedLockedAt by remember { mutableStateOf<Float?>(null) }
+-    var speedBeforeLock by remember { mutableFloatStateOf(defaultSpeed) }
+     // Speed remains locked when the chip fades away. Tap the video to reveal
+-    // it again for three seconds; tapping the chip restores the prior speed.
++    // it again for three seconds; Reset explicitly returns to normal 1.0x.
+     var speedLockChipVisible by remember { mutableStateOf(false) }
+     var speedLockChipTick by remember { mutableIntStateOf(0) }
++    // Both the speed sheet and the hold-to-lock gesture control ONE effective speed.
++    // A temporary hold is also reflected in UI state; releasing it restores the
++    // pre-hold rate. An explicit Reset clears the lock AND selects normal 1.0x.
++    fun applyUnifiedSpeed(value:Float, keepGestureLock:Boolean=false) {
++        speed=value
++        controller?.setPlaybackSpeed(value)
++        speedLockedAt=if(keepGestureLock) value else null
++        speedLockChipVisible=keepGestureLock
++        if(keepGestureLock) speedLockChipTick++
++    }
+     LaunchedEffect(speedLockedAt, speedLockChipTick, playerExpanded) {
+         if (!playerExpanded || speedLockedAt == null) {
+             speedLockChipVisible=false
+@@ -1111,8 +1120,7 @@
+         controller?.repeatMode=repeatMode
+         controller?.shuffleModeEnabled=shuffled
+         controller?.prepare()
+-        speed=defaultSpeed
+-        controller?.setPlaybackSpeed(speed)
++        applyUnifiedSpeed(defaultSpeed)
+         if(keepScreenOn) activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+         controller?.play()
+         if(video.title.endsWith(".mkv", ignoreCase=true)) {
+@@ -1214,9 +1222,15 @@
+                     duration=controller.duration.coerceAtLeast(0)
+                     if(pendingSeekTarget==null) position=controller.currentPosition.coerceAtLeast(0)
+                 }
++                override fun onPlaybackParametersChanged(
++                    playbackParameters:androidx.media3.common.PlaybackParameters) {
++                    // Also track changes originating from the connected player session.
++                    speed=playbackParameters.speed
++                }
+             }
+             controller.addListener(listener)
+             playingNow=controller.isPlaying
++            speed=controller.playbackParameters.speed
+             onDispose { controller.removeListener(listener) }
+         }
+     }
+@@ -1398,7 +1412,7 @@
+                                             holdSpeedActive=true
+                                             chosenSpeed=longPressBoost
+                                             holdSpeedSelected=chosenSpeed
+-                                            controller?.setPlaybackSpeed(chosenSpeed)
++                                            applyUnifiedSpeed(chosenSpeed)
+                                             gestureLabel=null;gestureMode=null
+                                             controlsVisible=false;controlTick++
+                                         }
+@@ -1460,17 +1474,12 @@
+                                                         if(newSpeed!=chosenSpeed) {
+                                                             chosenSpeed=newSpeed
+                                                             holdSpeedSelected=chosenSpeed
+-                                                            controller?.setPlaybackSpeed(chosenSpeed)
++                                                            applyUnifiedSpeed(chosenSpeed)
+                                                         }
+                                                         // Lift upwards while holding to make the speed persistent.
+                                                         if(dy < -56.dp.toPx()) {
+                                                             lockedDuringGesture=true
+-                                                            speedBeforeLock=originalSpeed
+-                                                            speedLockedAt=chosenSpeed
+-                                                            speedLockChipVisible=true
+-                                                            speedLockChipTick++
+-                                                            speed=chosenSpeed
+-                                                            controller?.setPlaybackSpeed(chosenSpeed)
++                                                            applyUnifiedSpeed(chosenSpeed, keepGestureLock=true)
+                                                             holdSpeedActive=false
+                                                         }
+                                                     }
+@@ -1511,7 +1520,8 @@
+                                             holdSpeedActive=false
+                                             if(!lockedDuringGesture) {
+                                                 // Temporary speed lasts only while the finger is down.
+-                                                controller?.setPlaybackSpeed(originalSpeed)
++                                                // Keep the menu label and actual playback speed in sync.
++                                                applyUnifiedSpeed(originalSpeed)
+                                             }
+                                             controlsVisible=controlsBeforeHold;controlTick++
+                                         }
+@@ -1574,11 +1584,10 @@
+                     Surface(
+                         modifier=Modifier.align(Alignment.TopCenter).statusBarsPadding()
+                             .padding(top=if(landscape) 16.dp else 78.dp)
+-                            .clickable(onClickLabel="Reset locked speed") {
+-                                controller?.setPlaybackSpeed(speedBeforeLock)
+-                                speed=speedBeforeLock
+-                                speedLockedAt=null
+-                                speedLockChipVisible=false
++                            .clickable(onClickLabel="Reset speed to normal 1x") {
++                                // Reset means 1.0x, not the possibly custom speed
++                                // that was selected before the hold (e.g. 3.0x).
++                                applyUnifiedSpeed(1f)
+                                 controlsVisible=true;controlTick++
+                             },
+                         shape=RoundedCornerShape(100),color=Color(0xEE1E293B),
+@@ -1588,7 +1597,7 @@
+                             verticalAlignment=Alignment.CenterVertically,
+                             horizontalArrangement=Arrangement.spacedBy(5.dp)) {
+                             Icon(Icons.Default.Lock,null,tint=Color(0xFF93C5FD),modifier=Modifier.size(12.dp))
+-                            Text("${speedLabel(speedLockedAt!!)}x locked · Reset",
++                            Text("${speedLabel(speedLockedAt!!)}x · Reset to 1x",
+                                 color=Color.White,fontSize=10.sp,fontWeight=FontWeight.SemiBold,
+                                 maxLines=1)
+                         }
+@@ -1866,11 +1875,9 @@
+                 if(!inPip && speedDialog) PlayerSpeedSheet(
+                     selected=speed,
+                     onChoose={ value ->
+-                        speedLockedAt=null
+-                        speedLockChipVisible=false
+-                        speedBeforeLock=value
+-                        speed=value
+-                        controller?.setPlaybackSpeed(value)
++                        // A manual selection replaces any hold-lock speed; the
++                        // speed icon, player and next gesture now agree.
++                        applyUnifiedSpeed(value)
+                         speedDialog=false;controlsVisible=true;controlTick++
+                     },
+                     onDismiss={speedDialog=false;controlTick++}

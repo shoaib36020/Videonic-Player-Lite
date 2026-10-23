@@ -1,0 +1,1 @@
+Base: videonic-codespaces-ui-gesture-fix.zip MainActivity.kt. Includes theme picker, real device storage total/used, mini video surface, progress dot fix. Private Folder/Recycle Bin are not yet implemented; clearly marked as unavailable. No APK build verified.

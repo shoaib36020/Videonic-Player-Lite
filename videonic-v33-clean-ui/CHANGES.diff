@@ -1,0 +1,362 @@
+--- v32/MainActivity.kt
++++ v33/MainActivity.kt
+@@ -1909,7 +1909,7 @@
+                                 Spacer(Modifier.width(14.dp))
+                             }
+                             Text(label,Modifier.weight(1f),fontSize=if(root)32.sp else 29.sp,
+-                                fontWeight=FontWeight.ExtraBold,color=textColor,maxLines=1,
++                                fontWeight=FontWeight.Bold,color=textColor,maxLines=1,
+                                 overflow=TextOverflow.Ellipsis)
+                             if(root && tab=="Videos") {
+                                 Image(painterResource(R.drawable.videonic_brand),"Videonic Player",
+@@ -2261,7 +2261,7 @@
+                             else-> videos
+                         }.filter{it.title.contains(query,true)}.let { items ->
+                             val activeSort=if(tab=="Folders" && folder!=null) folderVideoSort else sort
+-                            if(tab=="Recent" && activeSort=="Newest") items
++                            if(tab=="Recent") items // Recent order comes from watch history, never Videos sort.
+                             else items.sortedWith(videoComparator(activeSort))
+                         }
+ 
+@@ -2817,7 +2817,7 @@
+                     Surface(shape=RoundedCornerShape(16.dp),
+                         color=if(descending==desc)MaterialTheme.colorScheme.surface else Color.Transparent,
+                         shadowElevation=if(descending==desc)2.dp else 0.dp,
+-                        modifier=Modifier.weight(1f).clickable{update(field,desc)}) {
++                        modifier=Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).clickable{update(field,desc)}) {
+                         Box(Modifier.height(45.dp),contentAlignment=Alignment.Center) {
+                             Text(label,fontWeight=FontWeight.Bold,fontSize=14.sp,
+                                 color=if(descending==desc)Ink else Muted)
+@@ -2834,7 +2834,7 @@
+                     Surface(shape=RoundedCornerShape(16.dp),
+                         color=if(grid==isGrid)MaterialTheme.colorScheme.surface else Color.Transparent,
+                         shadowElevation=if(grid==isGrid)2.dp else 0.dp,
+-                        modifier=Modifier.weight(1f).clickable{onGrid(isGrid)}) {
++                        modifier=Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).clickable{onGrid(isGrid)}) {
+                         Box(Modifier.height(45.dp),contentAlignment=Alignment.Center) {
+                             Text(label,fontWeight=FontWeight.Bold,fontSize=14.sp,
+                                 color=if(grid==isGrid)Ink else Muted)
+@@ -2947,7 +2947,7 @@
+             verticalArrangement=Arrangement.spacedBy(12.dp)) {
+             gridItems(names,key={it}) { name ->
+                 Surface(shape=RoundedCornerShape(23.dp),color=MaterialTheme.colorScheme.surface,
+-                    shadowElevation=2.dp,modifier=Modifier.fillMaxWidth().clickable{onOpen(name)}) {
++                    shadowElevation=2.dp,modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(23.dp)).clickable{onOpen(name)}) {
+                     Column(Modifier.padding(18.dp)) {
+                         Box(Modifier.size(55.dp).clip(RoundedCornerShape(17.dp))
+                             .background(Brush.linearGradient(listOf(Color(0xFF3B82F6),Color(0xFF4338CA)))),
+@@ -2968,7 +2968,7 @@
+         verticalArrangement=Arrangement.spacedBy(14.dp)) {
+         items(names,key={it}) { name ->
+             Surface(shape=RoundedCornerShape(24.dp),color=MaterialTheme.colorScheme.surface,
+-                shadowElevation=2.dp,modifier=Modifier.fillMaxWidth().clickable{onOpen(name)}) {
++                shadowElevation=2.dp,modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).clickable{onOpen(name)}) {
+                 Row(Modifier.padding(18.dp),verticalAlignment=Alignment.CenterVertically) {
+                     Box(Modifier.size(57.dp).clip(RoundedCornerShape(18.dp))
+                         .background(Brush.linearGradient(listOf(Color(0xFF3B82F6),Color(0xFF4338CA)))),
+@@ -3001,7 +3001,7 @@
+             verticalArrangement=Arrangement.spacedBy(10.dp)) {
+             items(videos,key={it.id}) { video ->
+                 Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.surface,
+-                    modifier=Modifier.fillMaxWidth().combinedClickable(
++                    modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).combinedClickable(
+                         onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},
+                         onLongClick={onSelect(video.id)})) {
+                     Row(Modifier.padding(9.dp),verticalAlignment=Alignment.CenterVertically) {
+@@ -3033,7 +3033,7 @@
+         verticalArrangement=Arrangement.spacedBy(15.dp)) {
+         gridItems(videos,key={it.id}) { video ->
+             Surface(shape=RoundedCornerShape(24.dp),color=MaterialTheme.colorScheme.surface,
+-                shadowElevation=3.dp,modifier=Modifier.fillMaxWidth().combinedClickable(
++                shadowElevation=3.dp,modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).combinedClickable(
+                     onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},
+                     onLongClick={onSelect(video.id)})) {
+                 Column(Modifier.padding(9.dp)) {
+@@ -3087,9 +3087,9 @@
+ private fun ReferenceSettingEntry(icon:androidx.compose.ui.graphics.vector.ImageVector,title:String,
+     tint:Color,bg:Color,description:String?=null,checked:Boolean?=null,value:String?=null,
+     onClick:()->Unit={},onChecked:((Boolean)->Unit)?=null) {
+-    Row(Modifier.fillMaxWidth().clickable {
++    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable {
+         if(checked!=null) onChecked?.invoke(!checked) else onClick()
+-    }.padding(start=17.dp,end=17.dp,top=13.dp,bottom=13.dp),
++    }.padding(start=17.dp,end=17.dp,top=12.dp,bottom=12.dp),
+         verticalAlignment=Alignment.CenterVertically) {
+         Box(Modifier.size(45.dp).clip(RoundedCornerShape(14.dp)).background(
+             if(MaterialTheme.colorScheme.background.luminance()<.22f) tint.copy(alpha=.19f) else bg),
+@@ -3184,7 +3184,7 @@
+         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(11.dp)) {
+             listOf("light","dark","system").forEach { option ->
+                 val active=mode==option
+-                Column(Modifier.weight(1f).clickable{onChange(option)},horizontalAlignment=Alignment.CenterHorizontally) {
++                Column(Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).clickable{onChange(option)},horizontalAlignment=Alignment.CenterHorizontally) {
+                     val light=Color(0xFFF4F6FA)
+                     val night=Color(0xFF0F172A)
+                     Surface(shape=RoundedCornerShape(20.dp),color=if(option=="dark")night else light,
+@@ -3391,7 +3391,7 @@
+     if (!glass) {
+         Surface(
+             modifier = Modifier.fillMaxWidth()
+-                .padding(start=16.dp,end=16.dp,top=8.dp,bottom=22.dp),
++                .padding(start=16.dp,end=16.dp,top=5.dp,bottom=10.dp),
+             shape=barShape,
+             color=MaterialTheme.colorScheme.surface,
+             border=BorderStroke(.5.dp,MaterialTheme.colorScheme.outline.copy(alpha=.08f)),
+@@ -3442,9 +3442,9 @@
+ 
+     Box(
+         Modifier.fillMaxWidth()
+-            .padding(start=16.dp,end=16.dp,top=8.dp,bottom=22.dp)
+-            .height(62.dp)
+-            .shadow(11.dp,barShape)
++            .padding(start=16.dp,end=16.dp,top=5.dp,bottom=10.dp)
++            .height(58.dp)
++            .shadow(9.dp,barShape)
+             .clip(barShape)
+             .background(frosted)
+             .border(1.dp,edge,barShape)
+@@ -3537,7 +3537,7 @@
+         }
+         if(thumbnail!=null) Image(bitmap=thumbnail!!.asImageBitmap(),contentDescription=null,modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop)
+         else Icon(Icons.Default.Movie,null,tint=Accent,modifier=Modifier.size(29.dp))
+-        Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color.Black.copy(alpha=.68f),RoundedCornerShape(4.dp)).padding(horizontal=4.dp,vertical=2.dp)) {Text(clock(video.duration),color=Color.White,fontSize=10.sp)}
++        Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color.Black.copy(alpha=.46f),RoundedCornerShape(5.dp)).padding(horizontal=4.dp,vertical=2.dp)) {Text(clock(video.duration),color=Color.White,fontSize=10.sp)}
+     }
+ }
+ 
+@@ -3617,11 +3617,11 @@
+         Column(Modifier.fillMaxSize()) {
+             // Extra top breathing room; Scaffold already provides system-bar insets.
+             Row(
+-                Modifier.fillMaxWidth().padding(start=20.dp,end=20.dp,top=44.dp,bottom=22.dp),
++                Modifier.fillMaxWidth().padding(start=18.dp,end=18.dp,top=22.dp,bottom=14.dp),
+                 verticalAlignment=Alignment.CenterVertically
+             ) {
+                 Column(Modifier.weight(1f)) {
+-                    Text("Videos",fontSize=36.sp,fontWeight=FontWeight.ExtraBold,color=Ink,maxLines=1)
++                    Text("Videos",fontSize=32.sp,fontWeight=FontWeight.Bold,color=Ink,maxLines=1)
+                     Spacer(Modifier.height(3.dp))
+                     Text("${videos.size} videos · $sortDescription",color=Muted,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+                 }
+@@ -3630,8 +3630,8 @@
+                     IconButton(onClick=onToggleSearch,modifier=Modifier.size(38.dp)) {
+                         Icon(Icons.Default.Search,"Search videos",tint=Ink,modifier=Modifier.size(22.dp))
+                     }
+-                    HomeCircleButton(Icons.Default.Sort,"Sort videos",onOpenSort)
+-                    HomeCircleButton(if(grid)Icons.Default.ViewList else Icons.Default.GridView,"Change view",onToggleGrid)
++                    HomeCircleButton(Icons.Default.Sort,"Sort videos",onOpenSort,44.dp)
++                    HomeCircleButton(if(grid)Icons.Default.ViewList else Icons.Default.GridView,"Change view",onToggleGrid,44.dp)
+                 }
+             }
+             if(showSearch) {
+@@ -3650,16 +3650,16 @@
+                 LazyVerticalGrid(
+                     state=gridState,
+                     columns=GridCells.Fixed(columns),
+-                    contentPadding=PaddingValues(start=16.dp,end=16.dp,top=10.dp,bottom=114.dp),
+-                    horizontalArrangement=Arrangement.spacedBy(12.dp),
+-                    verticalArrangement=Arrangement.spacedBy(15.dp)
++                    contentPadding=PaddingValues(start=16.dp,end=16.dp,top=6.dp,bottom=86.dp),
++                    horizontalArrangement=Arrangement.spacedBy(10.dp),
++                    verticalArrangement=Arrangement.spacedBy(11.dp)
+                 ) {
+                     gridItems(videos) { video ->
+                         Surface(shape=RoundedCornerShape(20.dp),
+                             color=MaterialTheme.colorScheme.surface,
+                             tonalElevation=if(MaterialTheme.colorScheme.background.luminance()<.22f) 2.dp else 0.dp,
+                             shadowElevation=1.dp,
+-                            modifier=Modifier.fillMaxWidth().combinedClickable(
++                            modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).combinedClickable(
+                                 onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},
+                                 onLongClick={onSelect(video.id)})) {
+                             Column {
+@@ -3671,7 +3671,7 @@
+                                             modifier=Modifier.align(Alignment.TopStart).padding(9.dp)
+                                                 .background(Accent,RoundedCornerShape(50)).size(25.dp))
+                                     }
+-                                    Surface(shape=RoundedCornerShape(9.dp),color=Color.Black.copy(alpha=.78f),
++                                    Surface(shape=RoundedCornerShape(9.dp),color=Color.Black.copy(alpha=.48f),
+                                         modifier=Modifier.align(Alignment.BottomEnd).padding(8.dp)) {
+                                         Text(clock(video.duration),color=Color.White,fontSize=11.sp,
+                                             fontWeight=FontWeight.Bold,modifier=Modifier.padding(horizontal=7.dp,vertical=4.dp))
+@@ -3684,9 +3684,9 @@
+                                         }
+                                     }
+                                 }
+-                                Column(Modifier.fillMaxWidth().padding(start=11.dp,end=11.dp,top=10.dp,bottom=11.dp),
+-                                    verticalArrangement=Arrangement.spacedBy(7.dp)) {
+-                                    Text(video.title,color=Ink,fontSize=13.sp,fontWeight=FontWeight.Bold,
++                                Column(Modifier.fillMaxWidth().padding(start=10.dp,end=10.dp,top=7.dp,bottom=8.dp),
++                                    verticalArrangement=Arrangement.spacedBy(5.dp)) {
++                                    Text(video.title,color=Ink,fontSize=13.sp,fontWeight=FontWeight.SemiBold,
+                                         maxLines=2,lineHeight=17.sp,overflow=TextOverflow.Ellipsis,
+                                         modifier=Modifier.heightIn(min=34.dp))
+                                     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+@@ -3703,45 +3703,46 @@
+             } else {
+                 LazyColumn(
+                     state=listState,
+-                    contentPadding=PaddingValues(start=20.dp,end=20.dp,top=6.dp,bottom=110.dp),
+-                    verticalArrangement=Arrangement.spacedBy(8.dp)
++                    contentPadding=PaddingValues(start=18.dp,end=18.dp,top=2.dp,bottom=84.dp),
++                    verticalArrangement=Arrangement.spacedBy(4.dp)
+                 ) {
+                     items(videos) { video ->
+                         Row(
+-                            Modifier.fillMaxWidth().combinedClickable(
++                            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).combinedClickable(
+                                 onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},
+                                 onLongClick={onSelect(video.id)}
+-                            ).padding(vertical=10.dp),
++                            ).padding(vertical=6.dp),
+                             verticalAlignment=Alignment.CenterVertically
+                         ) {
+                             Box {
+-                                VideoThumb(video,Modifier.size(width=138.dp,height=82.dp))
++                                VideoThumb(video,Modifier.size(width=116.dp,height=70.dp))
+                                 if(video.id in selected) Icon(Icons.Default.CheckCircle,"Selected",tint=Accent,modifier=Modifier.align(Alignment.TopEnd).padding(4.dp))
+                             }
+-                            Spacer(Modifier.width(14.dp))
++                            Spacer(Modifier.width(12.dp))
+                             Column(Modifier.weight(1f)) {
+                                 Text(video.title,maxLines=2,overflow=TextOverflow.Ellipsis,fontSize=14.sp,
+-                                    fontWeight=FontWeight.ExtraBold,color=Ink)
+-                                Spacer(Modifier.height(6.dp))
++                                    fontWeight=FontWeight.SemiBold,lineHeight=19.sp,color=Ink)
++                                Spacer(Modifier.height(4.dp))
+                                 Row(verticalAlignment=Alignment.CenterVertically) {
+                                     QualityInline(video.width,video.height,12.sp)
+                                     Text(" · ${fileSize(video.size)}",color=Muted,fontSize=12.sp)
+                                 }
+                             }
+-                            IconButton(onClick={onMenu(video)}) {
+-                                Icon(Icons.Default.MoreVert,"Options",tint=Muted)
++                            IconButton(onClick={onMenu(video)},modifier=Modifier.size(40.dp)) {
++                                Icon(Icons.Default.MoreVert,"Options",tint=Muted,modifier=Modifier.size(22.dp))
+                             }
+                         }
+-                        HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.20f))
++                        HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.13f))
+                     }
+                 }
+             }
+         }
+         Surface(
+             shape=RoundedCornerShape(100),color=Accent,shadowElevation=10.dp,
+-            modifier=Modifier.align(Alignment.BottomEnd).padding(end=22.dp,bottom=24.dp).size(68.dp).clickable(onClick=onResumeVideo)
++            modifier=Modifier.align(Alignment.BottomEnd).padding(end=18.dp,bottom=18.dp)
++                .size(56.dp).clip(RoundedCornerShape(100)).clickable(onClick=onResumeVideo)
+         ) {
+-            Box(contentAlignment=Alignment.Center) { Icon(Icons.Default.PlayArrow,"Resume latest video",tint=Color.White,modifier=Modifier.size(37.dp)) }
++            Box(contentAlignment=Alignment.Center) { Icon(Icons.Default.PlayArrow,"Resume latest video",tint=Color.White,modifier=Modifier.size(31.dp)) }
+         }
+     }
+ }
+@@ -3802,20 +3803,20 @@
+     }
+     Column(Modifier.fillMaxSize()) {
+         Row(
+-            Modifier.fillMaxWidth().padding(start=20.dp,end=20.dp,top=44.dp,bottom=22.dp),
++            Modifier.fillMaxWidth().padding(start=18.dp,end=18.dp,top=22.dp,bottom=14.dp),
+             verticalAlignment=Alignment.CenterVertically
+         ) {
+             Column(Modifier.weight(1f)) {
+-                Text("Folders",fontSize=36.sp,fontWeight=FontWeight.ExtraBold,color=Ink,maxLines=1)
++                Text("Folders",fontSize=32.sp,fontWeight=FontWeight.Bold,color=Ink,maxLines=1)
+                 Spacer(Modifier.height(3.dp))
+                 Text(if(grid)"${folders.size} folders · ${if(descending) "Z-A" else "A-Z"}" else "${folders.size} folders",color=Muted,fontSize=13.sp)
+             }
+             Spacer(Modifier.width(8.dp))
+             Row(horizontalArrangement=Arrangement.spacedBy(7.dp)) {
+-                HomeCircleButton(Icons.Default.Search,"Search folders",onToggleSearch,42.dp)
+-                HomeCircleButton(Icons.Default.Sort,"Sort folders",onToggleSort,42.dp)
++                HomeCircleButton(Icons.Default.Search,"Search folders",onToggleSearch,40.dp)
++                HomeCircleButton(Icons.Default.Sort,"Sort folders",onToggleSort,40.dp)
+                 HomeCircleButton(if(grid)Icons.Default.ViewList else Icons.Default.GridView,
+-                    if(grid)"Folders list view" else "Folders grid view",onToggleGrid,42.dp)
++                    if(grid)"Folders list view" else "Folders grid view",onToggleGrid,40.dp)
+             }
+         }
+         if(showSearch) {
+@@ -3828,18 +3829,19 @@
+         }
+         if(grid) {
+             LazyVerticalGrid(
+-                columns=GridCells.Adaptive(minSize=156.dp),
+-                contentPadding=PaddingValues(start=20.dp,end=20.dp,top=12.dp,bottom=92.dp),
+-                horizontalArrangement=Arrangement.spacedBy(14.dp),verticalArrangement=Arrangement.spacedBy(14.dp)
++                columns=GridCells.Adaptive(minSize=152.dp),
++                contentPadding=PaddingValues(start=18.dp,end=18.dp,top=8.dp,bottom=76.dp),
++                horizontalArrangement=Arrangement.spacedBy(10.dp),verticalArrangement=Arrangement.spacedBy(10.dp)
+             ) {
+                 gridItems(folders) { entry ->
+                     val (pale,accent)=colorsFor(entry.first)
+                     Surface(
+-                        shape=RoundedCornerShape(28.dp),
++                        shape=RoundedCornerShape(22.dp),
+                         color=pale,
+-                        modifier=Modifier.fillMaxWidth().aspectRatio(.88f).clickable{onOpenFolder(entry.first)}
++                        modifier=Modifier.fillMaxWidth().aspectRatio(1.12f)
++                            .clip(RoundedCornerShape(22.dp)).clickable{onOpenFolder(entry.first)}
+                     ) {
+-                        Column(Modifier.fillMaxSize().padding(16.dp)) {
++                        Column(Modifier.fillMaxSize().padding(13.dp)) {
+                             Row(
+                                 Modifier.fillMaxWidth(),
+                                 horizontalArrangement=Arrangement.SpaceBetween,
+@@ -3850,10 +3852,10 @@
+                                         Icon(Icons.Default.FolderOpen,null,tint=accent,modifier=Modifier.size(22.dp))
+                                     }
+                                 }
+-                                Icon(Icons.Default.FolderOpen,null,tint=accent.copy(alpha=.25f),modifier=Modifier.size(60.dp))
++                                Icon(Icons.Default.FolderOpen,null,tint=accent.copy(alpha=.25f),modifier=Modifier.size(43.dp))
+                             }
+                             Spacer(Modifier.weight(1f))
+-                            Text(entry.first,color=Color(0xFF101828),fontWeight=FontWeight.ExtraBold,fontSize=15.sp,lineHeight=19.sp,maxLines=3,overflow=TextOverflow.Ellipsis)
++                            Text(entry.first,color=Color(0xFF101828),fontWeight=FontWeight.SemiBold,fontSize=14.sp,lineHeight=18.sp,maxLines=3,overflow=TextOverflow.Ellipsis)
+                             Spacer(Modifier.height(7.dp))
+                             Text("${entry.second.size} video${if(entry.second.size==1)"" else "s"}",color=accent,fontWeight=FontWeight.SemiBold,fontSize=13.sp)
+                         }
+@@ -3862,26 +3864,26 @@
+             }
+         } else {
+             LazyColumn(
+-                contentPadding=PaddingValues(start=20.dp,end=20.dp,top=12.dp,bottom=92.dp),
+-                verticalArrangement=Arrangement.spacedBy(13.dp)
++                contentPadding=PaddingValues(start=18.dp,end=18.dp,top=6.dp,bottom=76.dp),
++                verticalArrangement=Arrangement.spacedBy(6.dp)
+             ) {
+                 items(folders) { entry ->
+                     val (pale,accent)=colorsFor(entry.first)
+                     Column {
+                         Row(
+-                            Modifier.fillMaxWidth().clickable{onOpenFolder(entry.first)}.padding(vertical=7.dp),
++                            Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).clickable{onOpenFolder(entry.first)}.padding(vertical=5.dp),
+                             verticalAlignment=Alignment.CenterVertically
+                         ) {
+-                            ColorFolderArt(accent,pale,Modifier.size(width=116.dp,height=85.dp))
++                            ColorFolderArt(accent,pale,Modifier.size(width=99.dp,height=70.dp))
+                             Spacer(Modifier.width(18.dp))
+                             Column(Modifier.weight(1f)) {
+-                                Text(entry.first,fontWeight=FontWeight.ExtraBold,color=Ink,fontSize=16.sp,lineHeight=20.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
++                                Text(entry.first,fontWeight=FontWeight.SemiBold,color=Ink,fontSize=15.sp,lineHeight=19.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
+                                 Spacer(Modifier.height(5.dp))
+                                 Text("${entry.second.size} video${if(entry.second.size==1)"" else "s"}",color=Muted,fontSize=13.sp)
+                             }
+                             Icon(Icons.Default.ChevronRight,"Open folder",tint=Color(0xFFD0D6E0))
+                         }
+-                        HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.20f))
++                        HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.13f))
+                     }
+                 }
+             }
+@@ -3918,7 +3920,8 @@
+         }
+     } else LazyColumn(contentPadding=PaddingValues(horizontal=13.dp,vertical=7.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+         items(videos,key={it.id}){video->
+-            Surface(shape=RoundedCornerShape(19.dp),color=MaterialTheme.colorScheme.surface,modifier=Modifier.fillMaxWidth().combinedClickable(onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},onLongClick={onSelect(video.id)})) {
++            Surface(shape=RoundedCornerShape(19.dp),color=MaterialTheme.colorScheme.surface,modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(19.dp))
++                .combinedClickable(onClick={if(selected.isNotEmpty())onSelect(video.id) else onOpen(video)},onLongClick={onSelect(video.id)})) {
+                 Row(Modifier.padding(8.dp),verticalAlignment=Alignment.CenterVertically) {
+                     Box {
+                         VideoThumb(video,Modifier.size(width=128.dp,height=88.dp))

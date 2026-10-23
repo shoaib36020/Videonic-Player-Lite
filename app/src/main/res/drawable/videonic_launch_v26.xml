@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+  <item android:drawable="@android:color/white"/>
+  <item android:drawable="@drawable/videonic_brand" android:gravity="center" android:width="128dp" android:height="128dp"/>
+  <item android:drawable="@drawable/videonic_splash_name_v27" android:gravity="center" android:top="190dp" android:width="200dp" android:height="80dp"/>
+</layer-list>

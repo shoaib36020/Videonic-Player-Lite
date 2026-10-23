@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ system icon uses a 288dp viewport with a circular mask.
+     Keep the actual Videonic logo and its name safely inside the center 192dp.
+     BrandingImage is intentionally omitted: Android always puts that at bottom. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@android:color/transparent"
+          android:gravity="center" android:width="288dp" android:height="288dp" />
+    <item android:drawable="@drawable/videonic_brand"
+          android:gravity="top|center_horizontal" android:top="64dp"
+          android:width="100dp" android:height="100dp" />
+    <item android:drawable="@drawable/videonic_splash_name_compact_v28"
+          android:gravity="bottom|center_horizontal" android:bottom="76dp"
+          android:width="140dp" android:height="28dp" />
+</layer-list>
