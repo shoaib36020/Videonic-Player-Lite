@@ -1442,15 +1442,33 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                 post { requestLayout() }
                             } },
                             update={ view ->
-                                view.resizeMode=if(!landscape) AspectRatioFrameLayout.RESIZE_MODE_FIT else if(fullscreenStretch) AspectRatioFrameLayout.RESIZE_MODE_FILL else when(aspectIndex) {
-                                    1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                    2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                                    3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                val targetMode = if (!landscape) {
+                                    when(aspectIndex) {
+                                        1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                        2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                        3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    }
+                                } else if (fullscreenStretch) {
+                                    AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                } else {
+                                    when(aspectIndex) {
+                                        1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                        2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                        3 -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    }
                                 }
-                                view.scaleX=1f
-                                view.scaleY=1f
-                                if(view.player !== controller) view.player=controller
+                                if (view.resizeMode != targetMode) {
+                                    view.resizeMode = targetMode
+                                }
+                                view.scaleX = 1f
+                                view.scaleY = 1f
+                                if (view.player !== controller) {
+                                    view.player = controller
+                                }
+                                view.requestLayout()
+                                view.invalidate()
                             },
                             onRelease={ view -> view.player=null },
                             modifier=videoFrame.graphicsLayer {
