@@ -71,6 +71,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -127,8 +128,32 @@ import kotlin.math.abs
 // VIDEONIC_PLAYER_V15_STABILITY_SHEETS_GESTURES
 // VIDEONIC_UI_V7_PLAYLISTS_SETTINGS_FAVORITES_VAULT_TRASH
 // VIDEONIC_QUALITY_UPDATE_V1
-private val Accent = Color(0xFF2563EB)
+private val Accent: Color
+    @Composable get() = MaterialTheme.colorScheme.primary
 private val Pale = Color(0xFFF3F5FB)
+private data class ThemeColorOption(
+    val id:String,
+    val label:String,
+    val primary:Color,
+    val darkPrimary:Color,
+    val secondary:Color,
+    val darkSecondary:Color,
+    val swatchColors:List<Color> = listOf(primary,primary)
+)
+private val ThemeColorOptions = listOf(
+    ThemeColorOption("red","Red",Color(0xFFE50914),Color(0xFFB91C1C),
+        Color(0xFFB91C1C),Color(0xFFFF9A9E)),
+    ThemeColorOption("blue","Blue",Color(0xFF2563EB),Color(0xFF82A9FF),
+        Color(0xFF4F46E5),Color(0xFFA5B4FC)),
+    ThemeColorOption("purple","Purple",Color(0xFF7C3AED),Color(0xFFC4A1FF),
+        Color(0xFF9333EA),Color(0xFFD8B4FE)),
+    ThemeColorOption("green","Green",Color(0xFF15803D),Color(0xFF63D88D),
+        Color(0xFF0F766E),Color(0xFF5EEAD4)),
+    ThemeColorOption("teal","Teal",Color(0xFF0F766E),Color(0xFF6DD6C9),
+        Color(0xFF0369A1),Color(0xFF7DD3FC)),
+    ThemeColorOption("sunset","Sunset",Color(0xFFE85D04),Color(0xFFFFAA6B),
+        Color(0xFF9333EA),Color(0xFFCE9BFF),listOf(Color(0xFFF97316),Color(0xFF9333EA)))
+)
 // Text tones follow MaterialTheme, including System Dark mode.
 private val Ink: Color
     @Composable get() = MaterialTheme.colorScheme.onBackground
@@ -143,6 +168,20 @@ private object VideoThumbnailCache {
     }
     fun get(key:String):Bitmap?=cache.get(key)?.takeUnless { it.isRecycled }
     fun put(key:String,bitmap:Bitmap) { if(!bitmap.isRecycled) cache.put(key,bitmap) }
+}
+private fun loadVideoThumbnail(context:Context,uri:Uri,width:Int,height:Int):Bitmap? {
+    val resolver=context.contentResolver
+    return if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q) {
+        resolver.loadThumbnail(uri,android.util.Size(width,height),null)
+    } else {
+        @Suppress("DEPRECATION")
+        MediaStore.Video.Thumbnails.getThumbnail(
+            resolver,
+            android.content.ContentUris.parseId(uri),
+            MediaStore.Video.Thumbnails.MINI_KIND,
+            null
+        )
+    }
 }
 // A preference only: the active codec depends on the device, file, and available decoders.
 private fun decoderModeLabel(mode:String):String=when(mode) {
@@ -171,19 +210,9 @@ private fun resolutionLabel(width:Int,height:Int):String {
     }
 }
 
-// Resolution colors are intentionally distinct across Videos and Recent.
+// Resolution labels use the selected app accent consistently across screens.
 @Composable
-private fun qualityTint(width:Int,height:Int):Color {
-    val dark=MaterialTheme.colorScheme.background.luminance()<.22f
-    return when(resolutionLabel(width,height)) {
-        "4K" -> if(dark) Color(0xFFFFD16B) else Color(0xFFC05B04)
-        "2K" -> if(dark) Color(0xFFD6ADFF) else Color(0xFF7C3AED)
-        "1080p" -> if(dark) Color(0xFF92BAFF) else Color(0xFF2563EB)
-        "720p" -> if(dark) Color(0xFF77E1C7) else Color(0xFF078A78)
-        "480p" -> if(dark) Color(0xFF80D1E5) else Color(0xFF087A98)
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-}
+private fun qualityTint(width:Int,height:Int):Color = MaterialTheme.colorScheme.primary
 
 @Composable
 private fun QualityInline(width:Int,height:Int,fontSize: androidx.compose.ui.unit.TextUnit=12.sp) {
@@ -205,11 +234,27 @@ class MainActivity : ComponentActivity() {
     companion object { const val ACTION_OPEN_CURRENT_VIDEO = "com.videonic.lite.action.OPEN_CURRENT_VIDEO" }
     var notificationOpenRequest by mutableIntStateOf(0)
         private set
+    var sortResetSignal by mutableIntStateOf(0)
+        private set
     private var future: ListenableFuture<MediaController>? = null
     private val controller = mutableStateOf<MediaController?>(null)
     private val pipActive = mutableStateOf(false)
     // Updated by Compose to avoid automatically entering PiP for file pickers or settings screens.
     var playerScreenVisible = false
+    override fun onStart() {
+        super.onStart()
+        val prefs=getSharedPreferences("videonic",MODE_PRIVATE)
+        val now=System.currentTimeMillis()
+        val lastActive=prefs.getLong("app_last_active_at",0L)
+        if(lastActive>0L && now-lastActive>=60L*60L*1000L) {
+            prefs.edit().putString("video_sort","Newest")
+                .putString("folder_video_sort","Newest")
+                .putString("folder_sort_field","Name")
+                .putBoolean("folder_sort_descending",false).apply()
+            sortResetSignal++
+        }
+        prefs.edit().putLong("app_last_active_at",now).apply()
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (intent?.action == ACTION_OPEN_CURRENT_VIDEO) notificationOpenRequest++
@@ -300,7 +345,7 @@ class MainActivity : ComponentActivity() {
         prefs.edit().apply {
             remove("mkv_resume_guard_id")
             remove("mkv_resume_guard_ms")
-            if(isMkv && targetMs>=1000L) {
+            if(isMkv && targetMs>0L) {
                 putLong("mkv_resume_guard_id",mediaId)
                 putLong("mkv_resume_guard_ms",targetMs)
             }
@@ -334,6 +379,8 @@ class MainActivity : ComponentActivity() {
     }
     override fun onStop() {
         saveActivePlaybackPosition()
+        getSharedPreferences("videonic",MODE_PRIVATE).edit()
+            .putLong("app_last_active_at",System.currentTimeMillis()).apply()
         super.onStop()
         // Pause on Home unless the user explicitly enabled headphone background audio.
         val enabled = getSharedPreferences("videonic", MODE_PRIVATE)
@@ -350,8 +397,13 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun VideonicApp(controller: MediaController?, activity: MainActivity, inPip: Boolean) {
     val context = LocalContext.current
+    val libraryStateHolder=rememberSaveableStateHolder()
     val library = remember { LocalLibrary(context) }
     val appPrefs=remember { context.getSharedPreferences("videonic", Context.MODE_PRIVATE) }
+    var privateFolderKey by remember { mutableStateOf<ByteArray?>(null) }
+    var privateCacheInitialized by remember { mutableStateOf(false) }
+    var privateFolderChoosingSource by remember { mutableStateOf(false) }
+    var privateFolderSelectionMode by remember { mutableStateOf(false) }
     // Android displays the sole native splash; Compose opens directly to real content.
     var videos by remember { mutableStateOf<List<LocalVideo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -361,6 +413,13 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
     var subpage by remember { mutableStateOf<String?>(null) }
     var playing by remember { mutableStateOf<LocalVideo?>(null) }
     var playerExpanded by remember { mutableStateOf(false) }
+    LaunchedEffect(subpage,playing?.folder,playerExpanded) {
+        if(subpage!="Private Folder" && !(playerExpanded && playing?.folder=="Private")) {
+            if(privateFolderKey!=null) PrivateVault(context).cleanPlaybackCache()
+            privateFolderKey?.fill(0)
+            privateFolderKey=null
+        }
+    }
     var query by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf(appPrefs.getString("video_sort", "Newest") ?: "Newest") }
     var folderVideoSort by remember { mutableStateOf(appPrefs.getString("folder_video_sort", "Newest") ?: "Newest") }
@@ -393,11 +452,25 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
         appPrefs.edit().putString("folder_sort_field",folderSortField)
             .putBoolean("folder_sort_descending",folderDescending).apply()
     }
+    LaunchedEffect(activity.sortResetSignal) {
+        if(activity.sortResetSignal>0) {
+            sort="Newest"
+            folderVideoSort="Newest"
+            folderSortField="Name"
+            folderDescending=false
+        }
+    }
     var themeMode by remember { mutableStateOf(appPrefs.getString("appearance_mode", "system") ?: "system") }
+    var themeColor by remember {
+        mutableStateOf(ThemeColorOptions.firstOrNull {
+            it.id==appPrefs.getString("theme_color", "red")
+        }?.id ?: "red")
+    }
     var navigationStyle by remember { mutableStateOf(appPrefs.getString("navigation_style", "classic") ?: "classic") }
     var navigationStyleDialog by remember { mutableStateOf(false) }
     val systemDark=isSystemInDarkTheme()
     val dark=when(themeMode){"dark"->true;"light"->false;else->systemDark}
+    val selectedThemeColor=ThemeColorOptions.firstOrNull { it.id==themeColor } ?: ThemeColorOptions.first()
     var resumePlayback by remember { mutableStateOf(library.resumePlayback()) }
     var autoPlayNext by remember { mutableStateOf(library.autoPlayNext()) }
     var autoRotate by remember { mutableStateOf(library.autoRotate()) }
@@ -417,20 +490,25 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
         favorites.intersect(videos.map { it.id.toString() }.toSet())
     }
     var recent by remember { mutableStateOf(library.recent()) }
+    val recentVideos = remember(recent, videos) {
+        recent.mapNotNull { id -> videos.firstOrNull { it.id.toString()==id } }
+    }
     var playlistNames by remember { mutableStateOf(library.playlists()) }
     var playlistDialog by remember { mutableStateOf(false) }
-    // Resume is immediate. Offer an optional bottom action AFTER playback starts;
-    // never block video opening with an AlertDialog.
+    // Resume automatically from the saved position. Offer an optional bottom
+    // action only after playback has reached that position.
     var restartPromptVideoId by remember { mutableStateOf<String?>(null) }
     var restartPromptTargetMs by remember { mutableLongStateOf(0L) }
     var restartPromptVisible by remember { mutableStateOf(false) }
-    // Explicit Resume requests get one early, bounded verification once Media3
-    // has a timeline. This must never run for a fresh "Start over" playback.
+    // Explicit Resume requests stay paused until Media3 confirms the saved
+    // position. This must never run for a fresh "Start over" playback.
     var resumeStartRequest by remember { mutableStateOf<Pair<String,Long>?>(null) }
+    var surfaceAttachRequest by remember { mutableStateOf<Pair<String,Long>?>(null) }
     var playlistPickerName by remember { mutableStateOf<String?>(null) }
     var playlistPickerIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var newPlaylistName by remember { mutableStateOf("") }
     var videoMenu by remember { mutableStateOf<LocalVideo?>(null) }
+    var lockPrivateTarget by remember { mutableStateOf<LocalVideo?>(null) }
     var addToPlaylist by remember { mutableStateOf<LocalVideo?>(null) }
     // v25: Changes stay in this temporary selection until Done is pressed.
     // Cancel / Back discards them and leaves the real playlists untouched.
@@ -491,6 +569,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
     var decoderFallback by remember { mutableStateOf(appPrefs.getBoolean("decoder_fallback", true)) }
     var decoderBusy by remember { mutableStateOf(false) }
     var playbackError by remember { mutableStateOf<String?>(null) }
+    var resumePositionFailed by remember { mutableStateOf(false) }
     var scrubbing by remember { mutableStateOf(false) }
     var scrubFraction by remember { mutableFloatStateOf(0f) }
     var volumeLevel by remember { mutableFloatStateOf(.5f) }
@@ -498,6 +577,11 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
     var gestureLabel by remember { mutableStateOf<String?>(null) }
     var gestureTick by remember { mutableIntStateOf(0) }
     var gestureMode by remember { mutableStateOf<String?>(null) }
+    var cumulativeSeekSeconds by remember { mutableIntStateOf(0) }
+    var lastDoubleTapSide by remember { mutableIntStateOf(0) }
+    var lastDoubleTapTime by remember { mutableLongStateOf(0L) }
+    val singleTapHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    var controlsBeforeTapSequence by remember { mutableStateOf(true) }
     var fullscreenStretch by remember(playing?.id) { mutableStateOf(false) }
     LaunchedEffect(playerExpanded) {
         if (!playerExpanded) {
@@ -699,8 +783,8 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
         gestureLabel="Volume ${(volumeLevel*maxVolume).toInt()}";gestureMode="Volume";gestureTick++
     }
     fun setBrightness(value: Float) {
-        brightnessLevel=value.coerceIn(.02f,1f)
-        activity.window.attributes=activity.window.attributes.apply { screenBrightness=brightnessLevel }
+        brightnessLevel=value.coerceIn(0f,1f)
+        activity.window.attributes=activity.window.attributes.apply { screenBrightness=if(brightnessLevel<=0.01f) 0.01f else brightnessLevel }
         gestureLabel="Brightness ${(brightnessLevel*100).toInt()}%";gestureMode="Brightness";gestureTick++
     }
     // Send actual decoder preference to the player-owning service. On success Media3
@@ -822,7 +906,9 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
             }
             seekRequestEpoch++
             android.util.Log.i("VideonicTimeline", "native seekTo=$safeTarget state=${mediaController.playbackState}")
+            val wasPlaying=mediaController.playWhenReady
             mediaController.seekTo(safeTarget)
+            if(wasPlaying) mediaController.play()
             position=safeTarget
             controlTick++
             return
@@ -866,8 +952,8 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
             seekRecoveryBusy=false
             val success=runCatching {request.get().resultCode==SessionResult.RESULT_SUCCESS}.getOrDefault(false)
             if(success && playing?.id?.toString()==mediaId) {
-                playerSurfaceEpoch++
                 aspectIndex=0
+                playerSurfaceEpoch++
                 // If the user pressed seek repeatedly while the index was being
                 // built, only apply the most recent target after the new session is READY.
                 val latest=pendingSeekTarget
@@ -907,57 +993,136 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
         }
         queuedStartupSeek=null
     }
-    // Resume must be checked after the MKV seek map has become available.
-    // Some files have no cues or a broken index: requesting an initial position
-    // alone can silently reset to 00:00. Use the existing service's MKV index
-    // recovery ONCE at startup, then leave playback alone if recovery fails.
-    // Saved history remains protected in that case, even across onStop.
+    // Keep resumed playback paused until the requested position is confirmed.
+    // This prevents a broken MKV cue table from briefly exposing 00:00 before
+    // the indexed-seek recovery has a chance to run.
     LaunchedEffect(controller,resumeStartRequest,playerOpenEpoch) {
         val request=resumeStartRequest ?: return@LaunchedEffect
         val openEpoch=playerOpenEpoch
-        repeat(100) {
-            val player=controller ?: return@LaunchedEffect
+        val player=controller ?: return@LaunchedEffect
+        suspend fun waitForPosition(timeoutMs:Long):Boolean {
+            val deadline=android.os.SystemClock.elapsedRealtime()+timeoutMs
+            while(android.os.SystemClock.elapsedRealtime()<deadline) {
+                if(playerOpenEpoch!=openEpoch ||
+                    playing?.id?.toString()!=request.first ||
+                    player.currentMediaItem?.mediaId!=request.first) return false
+                val actual=player.currentPosition
+                if(player.playbackState==Player.STATE_READY &&
+                    kotlin.math.abs(actual-request.second)<=1500L &&
+                    !seekRecoveryBusy) return true
+                delay(100L)
+            }
+            return false
+        }
+        val readyDeadline=android.os.SystemClock.elapsedRealtime()+10_000L
+        var ready=false
+        while(!ready && android.os.SystemClock.elapsedRealtime()<readyDeadline) {
             if(playerOpenEpoch!=openEpoch ||
                 playing?.id?.toString()!=request.first) return@LaunchedEffect
             if(player.currentMediaItem?.mediaId==request.first &&
-                player.playbackState==Player.STATE_READY) {
-                val mkv=playing?.title?.endsWith(".mkv",ignoreCase=true)==true ||
-                    player.currentMediaItem?.localConfiguration?.uri
-                        ?.lastPathSegment?.endsWith(".mkv",ignoreCase=true)==true
-                if(player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) {
-                    if(player.currentPosition+2500L<request.second)
-                        player.seekTo(request.second)
-                    // Even seekable-looking MKVs can jump back to zero if their
-                    // cue table is invalid. Check once, early, before giving up.
-                    if(mkv && request.second>=10000L) {
-                        for(i in 0 until 18) {
-                            delay(150L)
-                            if(playerOpenEpoch!=openEpoch ||
-                                player.currentMediaItem?.mediaId!=request.first)
-                                return@LaunchedEffect
-                            if(player.playbackState==Player.STATE_READY &&
-                                player.currentPosition>=request.second-5000L) break
-                        }
-                        if(player.playbackState==Player.STATE_READY &&
-                            player.currentPosition<5000L &&
-                            player.currentPosition+5000L<request.second) {
-                            android.util.Log.i("VideonicTimeline",
-                                "MKV resumed near zero; requesting index recovery at ${request.second}ms")
-                            requestSeek(request.second,resumeAttempt=true,forceRecovery=true)
-                        }
-                    }
-                } else if(mkv) {
-                    android.util.Log.i("VideonicTimeline",
-                        "Unseekable MKV startup; requesting index recovery at ${request.second}ms")
-                    requestSeek(request.second,resumeAttempt=true,forceRecovery=true)
-                }
-                resumeStartRequest=null
-                return@LaunchedEffect
-            }
-            delay(100L)
+                player.playbackState==Player.STATE_READY) ready=true
+            if(!ready) delay(100L)
         }
-        // No ready timeline within 10s: do not seek unexpectedly during playback.
-        resumeStartRequest=null
+        if(!ready || playerOpenEpoch!=openEpoch ||
+            player.currentMediaItem?.mediaId!=request.first) {
+            resumePositionFailed=true
+            playbackError="The video did not become ready at its saved position. Try opening it again."
+            controlsVisible=true
+            controlTick++
+            resumeStartRequest=null
+            return@LaunchedEffect
+        }
+
+        player.pause()
+        val mkv=playing?.title?.endsWith(".mkv",ignoreCase=true)==true ||
+            player.currentMediaItem?.localConfiguration?.uri
+                ?.lastPathSegment?.endsWith(".mkv",ignoreCase=true)==true
+        val alreadyAtTarget=kotlin.math.abs(player.currentPosition-request.second)<=1500L
+        val nativeSeekAvailable=player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+        if(mkv) {
+            if(!alreadyAtTarget) requestSeek(request.second,resumeAttempt=true)
+        } else if(player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) &&
+            !alreadyAtTarget) {
+            player.seekTo(request.second)
+        }
+
+        var reached=waitForPosition(if(mkv && !nativeSeekAvailable && !alreadyAtTarget) 8000L else 2500L)
+        if(!reached && mkv && nativeSeekAvailable && playerOpenEpoch==openEpoch &&
+            player.currentMediaItem?.mediaId==request.first) {
+            android.util.Log.i("VideonicTimeline",
+                "Native MKV resume seek failed; preparing index at ${request.second}ms")
+            requestSeek(request.second,resumeAttempt=true,forceRecovery=true)
+            reached=waitForPosition(8000L)
+        }
+        if(!reached && playerOpenEpoch==openEpoch &&
+            player.currentMediaItem?.mediaId==request.first &&
+            player.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) {
+            player.seekTo(request.second)
+            reached=waitForPosition(2500L)
+        }
+        if(playerOpenEpoch!=openEpoch ||
+            player.currentMediaItem?.mediaId!=request.first) return@LaunchedEffect
+
+        if(reached) {
+            player.play()
+            val playbackDeadline=android.os.SystemClock.elapsedRealtime()+2500L
+            var startedAtTarget=false
+            while(android.os.SystemClock.elapsedRealtime()<playbackDeadline) {
+                if(playerOpenEpoch!=openEpoch ||
+                    player.currentMediaItem?.mediaId!=request.first) return@LaunchedEffect
+                if(player.isPlaying && player.currentPosition+1500L>=request.second) {
+                    delay(250L)
+                    startedAtTarget=playerOpenEpoch==openEpoch &&
+                        player.currentMediaItem?.mediaId==request.first &&
+                        player.isPlaying &&
+                        kotlin.math.abs(player.currentPosition-request.second)<=1500L
+                    break
+                }
+                delay(50L)
+            }
+            if(startedAtTarget) {
+                resumeStartRequest=null
+            } else {
+                resumePositionFailed=true
+                playbackError="Playback could not start at the saved position. It was kept hidden to avoid showing the beginning."
+                controlsVisible=true
+                controlTick++
+                resumeStartRequest=null
+            }
+        } else {
+            resumePositionFailed=true
+            playbackError="Couldn't seek this video to its saved position. Playback was kept paused to avoid starting from the beginning."
+            controlsVisible=true
+            controlTick++
+            resumeStartRequest=null
+        }
+    }
+    LaunchedEffect(controller,surfaceAttachRequest,playerOpenEpoch) {
+        val request=surfaceAttachRequest ?: return@LaunchedEffect
+        val openEpoch=playerOpenEpoch
+        val player=controller ?: return@LaunchedEffect
+        val deadline=android.os.SystemClock.elapsedRealtime()+1500L
+        while(android.os.SystemClock.elapsedRealtime()<deadline) {
+            if(playerOpenEpoch!=openEpoch ||
+                player.currentMediaItem?.mediaId!=request.first) return@LaunchedEffect
+            if(player.isPlaying && player.currentPosition+1500L>=request.second) {
+                delay(250L)
+                if(playerOpenEpoch==openEpoch &&
+                    player.currentMediaItem?.mediaId==request.first &&
+                    player.isPlaying &&
+                    player.currentPosition+1500L>=request.second) {
+                    surfaceAttachRequest=null
+                    return@LaunchedEffect
+                }
+            }
+            delay(50L)
+        }
+        if(playerOpenEpoch==openEpoch &&
+            player.currentMediaItem?.mediaId==request.first) {
+            surfaceAttachRequest=null
+            if(player.currentPosition+1500L<request.second)
+                resumeStartRequest=request
+        }
     }
     val permission = if(Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
     var permitted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context,permission) == PackageManager.PERMISSION_GRANTED) }
@@ -979,6 +1144,11 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
     }
     val trashLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
+            appPrefs.edit().apply {
+                pendingTrash.forEach { video ->
+                    putLong("restore_modified_${video.id}",video.modified)
+                }
+            }.apply()
             selectedIds=emptySet()
             pendingTrash=emptyList()
             refreshPending.value++
@@ -1174,6 +1344,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                     controller.duration.coerceAtLeast(0L),0L,"Media",System.currentTimeMillis())
             }
         if(liveVideo!=null) {
+            surfaceAttachRequest=item.mediaId to controller.currentPosition.coerceAtLeast(0L)
             aspectIndex=0; scrubbing=false; playerSurfaceEpoch++
             playing=liveVideo;playerExpanded=true;controlsVisible=true;lockPlayer=false;controlTick++
             activity.finishNotificationOpen()
@@ -1185,10 +1356,12 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
     fun startVideo(video: LocalVideo, startAt:Long) {
         cancelOldSeekRecovery()
         playerOpenEpoch++
+        surfaceAttachRequest=null
         lastSeekRecoveryStartedAt=0L
         queuedStartupSeek=null
         pendingSeekTarget=null
-        resumeStartRequest=if(startAt>=1000L) (video.id.toString() to startAt) else null
+        val isMkv=video.title.endsWith(".mkv",ignoreCase=true)
+        resumeStartRequest=if(startAt>0L) (video.id.toString() to startAt) else null
         restartPromptVideoId=if(startAt>=1000L) video.id.toString() else null
         restartPromptTargetMs=startAt.coerceAtLeast(0L)
         restartPromptVisible=false
@@ -1204,11 +1377,15 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
         scrubFraction=0f
         speedLockedAt=null;holdSpeedActive=false
         playing=video; playerExpanded=true; controlsVisible=true; lockPlayer=false; controlTick++
-        playbackError=null;decoderPicker=false;decoderInfo=false;trackDialog=null;speedDialog=false
-        library.visited(video.id); recent=library.recent()
+        playbackError=null;resumePositionFailed=false;decoderPicker=false;decoderInfo=false;trackDialog=null;speedDialog=false
+        if(video.folder!="Private") {
+            library.visited(video.id)
+            recent=library.recent()
+        }
         val queue=if(autoPlayNext && video.folder != "Private") videos.ifEmpty { listOf(video) } else listOf(video)
         val start=queue.indexOfFirst{it.id==video.id}.coerceAtLeast(0)
         android.util.Log.i("VideonicTimeline", "start videoId=${video.id} positionMs=$startAt")
+        if(startAt>0L) controller?.pause()
         controller?.setMediaItems(queue.map{MediaItem.Builder().setUri(it.uri)
             .setMediaId(it.id.toString()).build()},start,
             // TIME_UNSET uses the file's natural default start. Forcing an
@@ -1220,7 +1397,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
         controller?.prepare()
         applyUnifiedSpeed(defaultSpeed)
         if(keepScreenOn) activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        controller?.play()
+        if(startAt<=0L) controller?.play()
         if(video.title.endsWith(".mkv", ignoreCase=true)) {
             // Wait until the first frames actually play before reading a large
             // local MKV to prepare a seek index. This scan must never trigger a seek.
@@ -1241,6 +1418,8 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
         // Opening the already-running video must reattach the surface instead
         // of replacing its MediaItems (which always resets the queue/position).
         if(playing?.id==video.id && controller?.currentMediaItem?.mediaId==video.id.toString()) {
+            surfaceAttachRequest=video.id.toString() to
+                (controller?.currentPosition?.coerceAtLeast(0L) ?: 0L)
             cancelOldSeekRecovery()
             aspectIndex=0; scrubbing=false; playerSurfaceEpoch++
             playerExpanded=true; controlsVisible=true;lockPlayer=false;controlTick++
@@ -1276,7 +1455,6 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                 library.savePosition(current.id,livePosition)
         }
         controller?.stop(); controller?.clearMediaItems()
-        if(playing?.folder == "Private") PrivateVault(context).cleanPlaybackCache()
         speedLockedAt=null;holdSpeedActive=false
         playing=null; playerExpanded=false; speedDialog=false; lockPlayer=false
         aspectIndex=0; scrubbing=false
@@ -1304,6 +1482,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                 }
                 override fun onPlayerError(error:PlaybackException) {
                     if(!decoderBusy) {
+                        resumePositionFailed=false
                         playbackError="${error.errorCodeName}: ${error.localizedMessage ?: "This file could not be decoded on this device."}"
                         controlsVisible=true;controlTick++
                     }
@@ -1312,8 +1491,10 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                     val item=videos.firstOrNull { it.id.toString()==mediaItem?.mediaId }
                     if(item!=null) {
                         playing=item
-                        library.visited(item.id)
-                        recent=library.recent()
+                        if(item.folder!="Private") {
+                            library.visited(item.id)
+                            recent=library.recent()
+                        }
                     }
                 }
                 override fun onPlaybackStateChanged(playbackState:Int) {
@@ -1388,6 +1569,13 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                 restartPromptVideoId=null;restartPromptVisible=false
                 activity.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             } }
+            subpage=="Private Folder" && privateFolderChoosingSource -> {
+                privateFolderChoosingSource=false
+            }
+            subpage=="Private Folder" && privateFolderSelectionMode -> {
+                privateFolderSelectionMode=false
+                selectedIds=emptySet()
+            }
             subpage!=null -> subpage=parentPage(subpage)
             folder!=null -> { folder=null;query="";librarySearchVisible=false }
             else -> { tab="Videos";query="" }
@@ -1405,13 +1593,23 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
     }
 
     val scheme=if(dark) darkColorScheme(
-        primary=Color(0xFF89B2FF),onPrimary=Color(0xFF071225),
-        background=Color(0xFF0E1422),onBackground=Color(0xFFF5F7FF),
-        surface=Color(0xFF1B273B),onSurface=Color(0xFFF5F7FF),
-        surfaceVariant=Color(0xFF28364C),onSurfaceVariant=Color(0xFFAFBED4),
-        outline=Color(0xFF677993),error=Color(0xFFFF8B89)
+        primary=selectedThemeColor.darkPrimary,onPrimary=Color.White,
+        primaryContainer=selectedThemeColor.darkPrimary.copy(alpha=.22f),onPrimaryContainer=Color.White,
+        secondary=selectedThemeColor.darkSecondary,onSecondary=Color(0xFF202526),
+        secondaryContainer=selectedThemeColor.darkSecondary.copy(alpha=.22f),onSecondaryContainer=Color(0xFFE1E6E5),
+        background=Color(0xFF111213),onBackground=Color(0xFFF2F2EF),
+        surface=Color(0xFF1A1C1D),onSurface=Color(0xFFF2F2EF),
+        surfaceVariant=Color(0xFF292B2D),onSurfaceVariant=Color(0xFFBEC0C2),
+        outline=Color(0xFF777A7C),outlineVariant=Color(0xFF444749),
+        error=Color(0xFFFFB4AB)
     ) else lightColorScheme(
-        primary=Accent,background=Color.White,onBackground=Color(0xFF0F172A),
+        primary=selectedThemeColor.primary,onPrimary=Color.White,
+        primaryContainer=selectedThemeColor.primary.copy(alpha=.12f),
+        onPrimaryContainer=selectedThemeColor.primary,
+        secondary=selectedThemeColor.secondary,
+        secondaryContainer=selectedThemeColor.secondary.copy(alpha=.12f),
+        onSecondaryContainer=selectedThemeColor.secondary,
+        background=Color.White,onBackground=Color(0xFF0F172A),
         surface=Color.White,onSurface=Color(0xFF0F172A),
         surfaceVariant=Color(0xFFF0F3F8),onSurfaceVariant=Color(0xFF64748B)
     )
@@ -1431,11 +1629,21 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                     // This independent frame keeps a stale TextureView matrix from
                     // stretching the picture to the full portrait window.
                     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment=Alignment.Center) {
-                        val videoFrame = Modifier.fillMaxSize()
+                        val videoSize = controller.videoSize
+                        val videoRatio = if (videoSize.width > 0 && videoSize.height > 0) {
+                            videoSize.width.toFloat() / videoSize.height.toFloat()
+                        } else 16f / 9f
+
+                        val videoFrame = if (!landscape && aspectIndex == 0) {
+                            Modifier.fillMaxWidth().aspectRatio(videoRatio)
+                        } else {
+                            Modifier.fillMaxSize()
+                        }
                         AndroidView(
                             factory={ ctx -> (android.view.LayoutInflater.from(ctx)
                                 .inflate(R.layout.videonic_player_texture,null) as PlayerView).apply {
                                 useController=false
+                                setKeepContentOnPlayerReset(true)
                                 resizeMode=AspectRatioFrameLayout.RESIZE_MODE_FIT
                                 layoutParams=ViewGroup.LayoutParams(-1,-1)
                                 player=controller
@@ -1480,12 +1688,20 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                         )
                     }
                 }
+                if(resumeStartRequest?.first==item.id.toString() ||
+                    surfaceAttachRequest?.first==item.id.toString() ||
+                    (resumePositionFailed && playing?.id==item.id)) {
+                    Box(
+                        Modifier.fillMaxSize().background(Color.Black),
+                        contentAlignment=Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color=Color.White.copy(alpha=.82f))
+                    }
+                }
                 if(!inPip) {
                     Box(Modifier.fillMaxSize()
                         .pointerInput(lockPlayer,doubleTapEnabled,gestureLevelsEnabled,seekSeconds,controller) {
                             if(lockPlayer) {
-                                // Consume taps while locked: reveal only the unlock icon.
-                                // Every tap restarts the independent three-second timer.
                                 detectTapGestures(onTap={
                                     lockIconVisible=true
                                     lockIconTick++
@@ -1516,13 +1732,10 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                     val speedSteps=listOf(.5f,1f,1.5f,2f,2.5f,3f,4f)
                                     var chosenSpeed=longPressBoost
                                     var finished=false
-                                    val slop=viewConfiguration.touchSlop
-                                    // Main-thread callback fires even when the finger remains
-                                    // completely still. Avoid suspend timeouts in Compose's
-                                    // restricted AwaitPointerEventScope.
+                                    val dragThreshold=20.dp.toPx()
                                     val holdHandler=android.os.Handler(android.os.Looper.getMainLooper())
                                     val startHold=Runnable {
-                                        if(speedLockedAt==null && !finished && !boosting && direction==0 && abs(dx)<slop && abs(dy)<slop) {
+                                        if(speedLockedAt==null && !finished && !boosting && direction==0 && abs(dx)<dragThreshold && abs(dy)<dragThreshold) {
                                             boosting=true
                                             holdSpeedActive=true
                                             chosenSpeed=longPressBoost
@@ -1534,20 +1747,18 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                     }
                                     holdHandler.postDelayed(startHold,340L)
                                     try {
-                                                                                while(!finished) {
+                                        while(!finished) {
                                             val event=awaitPointerEvent()
                                             val pressedPointers=event.changes.filter { it.pressed }
 
-                                            // Two fingers continuously zoom and pan the video. This gesture never seeks,
-                                            // changes orientation, or triggers a tap. There is no fixed maximum zoom.
                                             if(pressedPointers.size >= 2) {
                                                 holdHandler.removeCallbacks(startHold)
                                                 val firstId=pressedPointers[0].id
                                                 val secondId=pressedPointers[1].id
                                                 var previousDistance:Float = run {
-                                                    val dx=pressedPointers[0].position.x-pressedPointers[1].position.x
-                                                    val dy=pressedPointers[0].position.y-pressedPointers[1].position.y
-                                                    kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat()
+                                                    val pdx=pressedPointers[0].position.x-pressedPointers[1].position.x
+                                                    val pdy=pressedPointers[0].position.y-pressedPointers[1].position.y
+                                                    kotlin.math.sqrt((pdx*pdx+pdy*pdy).toDouble()).toFloat()
                                                 }
                                                 var previousCenterX=(pressedPointers[0].position.x+pressedPointers[1].position.x)/2f
                                                 var previousCenterY=(pressedPointers[0].position.y+pressedPointers[1].position.y)/2f
@@ -1563,9 +1774,9 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                                         pinchEvent.changes.forEach { it.consume() }
                                                         pinchActive=false
                                                     } else {
-                                                        val dx=first.position.x-second.position.x
-                                                        val dy=first.position.y-second.position.y
-                                                        val currentDistance=kotlin.math.sqrt((dx*dx+dy*dy).toDouble()).toFloat()
+                                                        val pdx=first.position.x-second.position.x
+                                                        val pdy=first.position.y-second.position.y
+                                                        val currentDistance=kotlin.math.sqrt((pdx*pdx+pdy*pdy).toDouble()).toFloat()
                                                         val currentCenterX=(first.position.x+second.position.x)/2f
                                                         val currentCenterY=(first.position.y+second.position.y)/2f
 
@@ -1596,7 +1807,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                                 continue
                                             }
 
-                                            val change=event.changes.firstOrNull {it.id==down.id}
+                                            val change=event.changes.firstOrNull { it.id==down.id }
                                             if(change==null) { finished=true;continue }
                                             if(!change.pressed) {
                                                 when {
@@ -1606,30 +1817,60 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                                     direction==2 || direction==3 -> Unit
                                                     boosting -> Unit
                                                     else -> {
+                                                        val tapNow=down.uptimeMillis
                                                         val isCenter=startX in (size.width*.33f)..(size.width*.67f)
-                                                        val doubleTap=down.uptimeMillis-lastTapAt in 1L..320L &&
-                                                            abs(startX-lastTapX)<80.dp.toPx() && (isCenter || doubleTapEnabled)
-                                                        if(doubleTap) {
+                                                        val side=if(startX>size.width/2f) 1 else -1
+                                                        val isRapidTap=(tapNow-lastDoubleTapTime)<750L && side==lastDoubleTapSide
+                                                        val isDoubleTap=(tapNow-lastTapAt) in 1L..360L && abs(startX-lastTapX)<95.dp.toPx() && (isCenter || doubleTapEnabled)
+
+                                                        if(isRapidTap || isDoubleTap) {
+                                                            singleTapHandler.removeCallbacksAndMessages(null)
                                                             val player=controller
                                                             if(player!=null) {
-                                                                if(isCenter) {
+                                                                if(isCenter && !isRapidTap) {
                                                                     if(player.isPlaying) player.pause() else player.play()
+                                                                    lastTapAt=0L
                                                                 } else {
-                                                                    val delta=if(startX>size.width/2f)seekSeconds*1000L else -seekSeconds*1000L
+                                                                    val currentSec=if(isRapidTap) cumulativeSeekSeconds+seekSeconds else seekSeconds
+                                                                    cumulativeSeekSeconds=currentSec
+                                                                    lastDoubleTapSide=side
+                                                                    lastDoubleTapTime=tapNow
+                                                                    val delta=side*seekSeconds*1000L
                                                                     val max=videoDurationFallback(player,duration)
                                                                     val target=(player.currentPosition+delta).coerceAtLeast(0L)
-                                                                    requestSeek(if(max>0L)target.coerceAtMost(max) else target)
-                                                                    gestureLabel=if(delta>0)"+${seekSeconds}s" else "-${seekSeconds}s"
-                                                                    gestureMode="Seek";gestureTick++
+                                                                    requestSeek(if(max>0L) target.coerceAtMost(max) else target)
+                                                                    gestureLabel=if(side>0) "+${currentSec}s" else "-${currentSec}s"
+                                                                    gestureMode="Seek"
+                                                                    gestureTick++
+                                                                    lastTapAt=tapNow
+                                                                    // Preserve exact state before tap sequence: if controls were hidden, they stay hidden!
+                                                                    controlsVisible=controlsBeforeTapSequence
+                                                                    if(controlsVisible) controlTick++
                                                                 }
                                                             }
-                                                            lastTapAt=0L
                                                         } else {
-                                                            lastTapAt=down.uptimeMillis;lastTapX=startX
-                                                            controlsVisible=!controlsVisible;controlTick++
-                                                            if(speedLockedAt!=null) {
-                                                                speedLockChipVisible=true
-                                                                speedLockChipTick++
+                                                            controlsBeforeTapSequence=controlsVisible
+                                                            lastTapAt=tapNow
+                                                            lastTapX=startX
+                                                            cumulativeSeekSeconds=0
+                                                            lastDoubleTapSide=0
+                                                            singleTapHandler.removeCallbacksAndMessages(null)
+                                                            if(doubleTapEnabled && !isCenter) {
+                                                                singleTapHandler.postDelayed({
+                                                                    controlsVisible=!controlsVisible
+                                                                    controlTick++
+                                                                    if(speedLockedAt!=null) {
+                                                                        speedLockChipVisible=true
+                                                                        speedLockChipTick++
+                                                                    }
+                                                                }, 250L)
+                                                            } else {
+                                                                controlsVisible=!controlsVisible
+                                                                controlTick++
+                                                                if(speedLockedAt!=null) {
+                                                                    speedLockChipVisible=true
+                                                                    speedLockChipTick++
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1642,10 +1883,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                                 if(boosting) {
                                                     change.consume()
                                                     if(!lockedDuringGesture) {
-                                                        // Keep a compact speed scale; horizontal movement selects a speed.
                                                         val originIndex=speedSteps.indices.minByOrNull { abs(speedSteps[it]-longPressBoost) } ?: 3
-                                                        // A short 18dp horizontal drag selects one step in either direction.
-                                                        // Independent of screen width; lock/reset semantics remain unchanged.
                                                         val movement=(dx / 18.dp.toPx()).toInt()
                                                         val newSpeed=speedSteps[(originIndex+movement).coerceIn(0,speedSteps.lastIndex)]
                                                         if(newSpeed!=chosenSpeed) {
@@ -1653,7 +1891,6 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                                             holdSpeedSelected=chosenSpeed
                                                             applyUnifiedSpeed(chosenSpeed)
                                                         }
-                                                        // Lift upwards while holding to make the speed persistent.
                                                         if(dy < -56.dp.toPx()) {
                                                             lockedDuringGesture=true
                                                             applyUnifiedSpeed(chosenSpeed, keepGestureLock=true)
@@ -1661,32 +1898,39 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                                         }
                                                     }
                                                 } else {
-                                                    if(direction==0 && maxOf(abs(dx),abs(dy))>slop) {
-                                                        holdHandler.removeCallbacks(startHold)
-                                                        direction=if(abs(dx)>abs(dy)*1.12f) 1
-                                                            else if(gestureLevelsEnabled && abs(dy)>abs(dx)*1.12f)
-                                                                if(startX<size.width/2f) 2 else 3
-                                                            else 0
+                                                    if(direction==0) {
+                                                        if(abs(dx)>dragThreshold && abs(dx)>abs(dy)*1.2f) {
+                                                            holdHandler.removeCallbacks(startHold)
+                                                            direction=1
+                                                        } else if(gestureLevelsEnabled && abs(dy)>dragThreshold && abs(dy)>abs(dx)*1.2f) {
+                                                            holdHandler.removeCallbacks(startHold)
+                                                            direction=if(startX<size.width/2f) 2 else 3
+                                                        }
                                                     }
                                                     if(direction!=0) {
                                                         change.consume()
                                                         when(direction) {
                                                             1 -> {
                                                                 val player=controller
-                                                                val range=player?.let {videoDurationFallback(it,duration)} ?: duration
+                                                                val range=player?.let { videoDurationFallback(it,duration) } ?: duration
                                                                 if(range>0L && player!=null) {
-                                                                    // Whole-screen drag maps to at most 30% of a video;
-                                                                    // much more controllable on both short and long clips.
-                                                                    val maximumChange=(range*.30f).toLong().coerceAtLeast(10_000L)
-                                                                    destination=(origin+(dx/size.width.coerceAtLeast(1)*maximumChange).toLong()).coerceIn(0L,range)
-                                                                    gestureLabel="Seek ${clock(destination)} / ${clock(range)}"
+                                                                    val pxPerSec=8.dp.toPx()
+                                                                    val scrubSec=(dx / pxPerSec).toLong()
+                                                                    destination=(origin+scrubSec*1000L).coerceIn(0L,range)
+                                                                    lastDoubleTapSide=if(dx<0f)-1 else 1
+                                                                    gestureLabel="${clock(destination)} / ${clock(range)}"
                                                                 } else gestureLabel=null
-                                                                gestureMode="Seek";gestureTick++
+                                                                gestureMode="SeekSwipe";gestureTick++
                                                             }
-                                                            2 -> setBrightness(brightnessLevel-delta.y/size.height.coerceAtLeast(1).toFloat()*1.4f)
-                                                            3 -> setVolume(volumeLevel-delta.y/size.height.coerceAtLeast(1).toFloat()*1.4f)
+                                                            2 -> setBrightness((brightnessLevel-delta.y/size.height*1.5f).coerceIn(0f,1f))
+                                                            3 -> setVolume((volumeLevel-delta.y/size.height*1.5f).coerceIn(0f,1f))
                                                         }
-                                                        controlsVisible=true;controlTick++
+                                                        if(direction==1) {
+                                                            controlsVisible=false
+                                                        } else {
+                                                            controlsVisible=true
+                                                            controlTick++
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1696,8 +1940,6 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                         if(boosting) {
                                             holdSpeedActive=false
                                             if(!lockedDuringGesture) {
-                                                // Temporary speed lasts only while the finger is down.
-                                                // Keep the menu label and actual playback speed in sync.
                                                 applyUnifiedSpeed(originalSpeed)
                                             }
                                             controlsVisible=controlsBeforeHold;controlTick++
@@ -1755,7 +1997,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                     }
                                 }
                                 Icon(Icons.Default.ArrowUpward,"Swipe up to lock",
-                                    tint=Color(0xFFD6E4FF),modifier=Modifier.size(11.dp))
+                                    tint=Color(0xFFFFD4D4),modifier=Modifier.size(11.dp))
                             }
                         }
                         Surface(
@@ -1799,7 +2041,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                     if (gestureMode == "Brightness" || gestureMode == "Volume") {
                         val isBright = gestureMode == "Brightness"
                         val level = if(isBright) brightnessLevel else volumeLevel
-                        val tint = if(isBright) Color(0xFFFFB91D) else Color(0xFF1489F5)
+                        val tint = if(isBright) Color(0xFFFFB91D) else Accent
                         Surface(
                             modifier=Modifier.align(if(isBright) Alignment.CenterStart else Alignment.CenterEnd)
                                 .padding(horizontal=9.dp),
@@ -1820,7 +2062,41 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                 Text(if(isBright) "SUN" else "VOL",color=Color.LightGray,fontSize=8.sp)
                             }
                         }
-                    } else Surface(modifier=Modifier.align(Alignment.Center).padding(top=170.dp),shape=RoundedCornerShape(15.dp),color=Color(0xDF132438)) {
+                    } else if(gestureMode=="SeekSwipe") {
+                        Surface(
+                            modifier=Modifier.align(Alignment.Center),
+                            shape=RoundedCornerShape(50),
+                            color=Color.Black.copy(alpha=.72f)
+                        ) {
+                            Text(gestureLabel.orEmpty(),color=Color.White,
+                                fontWeight=FontWeight.Bold,fontSize=16.sp,maxLines=1,
+                                modifier=Modifier.padding(horizontal=16.dp,vertical=10.dp))
+                        }
+                    } else if (gestureMode == "Seek" && lastDoubleTapSide != 0) {
+                        Row(
+                            modifier=Modifier.align(
+                                if(lastDoubleTapSide<0) Alignment.CenterStart else Alignment.CenterEnd
+                            ).padding(horizontal=22.dp),
+                            verticalAlignment=Alignment.CenterVertically,
+                            horizontalArrangement=Arrangement.spacedBy(7.dp)
+                        ) {
+                            if(lastDoubleTapSide<0) {
+                                Icon(Icons.Default.FastRewind,null,tint=Accent,modifier=Modifier.size(22.dp))
+                                Text(gestureLabel.orEmpty(),color=Color.White,
+                                    fontWeight=FontWeight.Bold,
+                                    fontSize=19.sp,
+                                    maxLines=1,overflow=TextOverflow.Ellipsis,
+                                    modifier=Modifier.widthIn(max=130.dp))
+                            } else {
+                                Text(gestureLabel.orEmpty(),color=Color.White,
+                                    fontWeight=FontWeight.Bold,
+                                    fontSize=19.sp,
+                                    maxLines=1,overflow=TextOverflow.Ellipsis,
+                                    modifier=Modifier.widthIn(max=130.dp))
+                                Icon(Icons.Default.FastForward,null,tint=Accent,modifier=Modifier.size(22.dp))
+                            }
+                        }
+                    } else if(gestureMode!="Seek") Surface(modifier=Modifier.align(Alignment.Center).padding(top=80.dp),shape=RoundedCornerShape(50),color=Color.Black.copy(alpha=0.72f),border=BorderStroke(1.dp,Accent.copy(alpha=0.6f))) {
                         Text(gestureLabel!!,color=Color.White,modifier=Modifier.padding(horizontal=20.dp,vertical=12.dp),fontWeight=FontWeight.Bold)
                     }
                 }
@@ -1902,7 +2178,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                             }
                             controlTick++
                         }
-                        Surface(shape=RoundedCornerShape(100),color=Color(0xFF2563EB),
+                        Surface(shape=RoundedCornerShape(100),color=Accent,
                             shadowElevation=9.dp,modifier=Modifier.size(if(landscape) 62.dp else 72.dp).clip(RoundedCornerShape(100))
                                 .combinedClickable(
                                     onClick={
@@ -1931,7 +2207,14 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                     }
                     Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha=.64f)).navigationBarsPadding().padding(horizontal=12.dp,vertical=if(landscape) 2.dp else 8.dp)) {
                         Row(verticalAlignment=Alignment.CenterVertically) {
-                            Text(clock(position),color=Color.White,fontSize=12.sp)
+                            Text(
+                                text=clock(position),
+                                color=Color.White,
+                                fontSize=12.sp,
+                                fontWeight=FontWeight.SemiBold,
+                                textAlign=androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier=Modifier.width(52.dp)
+                            )
                             Slider(
                                 value=if(scrubbing) scrubFraction else if(duration>0)(position.toFloat()/duration).coerceIn(0f,1f) else 0f,
                                 onValueChange={scrubbing=true;scrubFraction=it.coerceIn(0f,1f);controlTick++},
@@ -1943,10 +2226,22 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                     }
                                     scrubbing=false;controlTick++
                                 },
+                                colors=SliderDefaults.colors(
+                                    thumbColor=Accent,
+                                    activeTrackColor=Accent,
+                                    inactiveTrackColor=Color.White.copy(alpha=0.32f)
+                                ),
                                 enabled=duration>0L && !decoderBusy,
-                                modifier=Modifier.weight(1f).padding(horizontal=8.dp)
+                                modifier=Modifier.weight(1f).padding(horizontal=6.dp)
                             )
-                            Text(clock(duration),color=Color.White,fontSize=12.sp)
+                            Text(
+                                text=clock(duration),
+                                color=Color.White,
+                                fontSize=12.sp,
+                                fontWeight=FontWeight.SemiBold,
+                                textAlign=androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier=Modifier.width(52.dp)
+                            )
                         }
                         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceAround) {
                             PlayerAction(Icons.Default.Lock,"Lock",landscape){
@@ -2032,14 +2327,27 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                 if(!inPip && brightnessPopup) PlayerLevelDialog("Brightness",brightnessLevel,{setBrightness(it)},{brightnessPopup=false;controlTick++})
                 if(!inPip && playbackError!=null && !decoderBusy) {
                     AlertDialog(
-                        onDismissRequest={playbackError=null},
-                        title={Text("Playback needs another decoder")},
-                        text={Text("Videonic couldn't decode this video using the selected decoder. " +
-                            "You can retry using the built-in Android decoder choices. " +
-                            "Some codecs (including certain 10-bit formats) may not be supported by this phone. " +
-                            playbackError.orEmpty())},
+                        onDismissRequest={
+                            val failedResume=resumePositionFailed
+                            playbackError=null
+                            resumePositionFailed=false
+                            if(failedResume) closePlayer()
+                        },
+                        title={Text(if(resumePositionFailed) "Couldn't resume video" else "Playback needs another decoder")},
+                        text={Text(if(resumePositionFailed) playbackError.orEmpty() else
+                            "Videonic couldn't decode this video using the selected decoder. " +
+                                "You can retry using the built-in Android decoder choices. " +
+                                "Some codecs (including certain 10-bit formats) may not be supported by this phone. " +
+                                playbackError.orEmpty())},
                         confirmButton={
-                            Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                            if(resumePositionFailed) {
+                                TextButton(onClick={
+                                    val video=playing
+                                    playbackError=null
+                                    resumePositionFailed=false
+                                    if(video!=null) startVideo(video,library.position(video.id))
+                                }) { Text("Retry resume") }
+                            } else Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) {
                                 TextButton(onClick={
                                     playbackError=null
                                     if(decoderMode=="software" && decoderFallback) {
@@ -2056,7 +2364,12 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                 }) { Text("Retry automatic") }
                             }
                         },
-                        dismissButton={TextButton(onClick={playbackError=null}) {Text("Close")}}
+                        dismissButton={TextButton(onClick={
+                            val failedResume=resumePositionFailed
+                            playbackError=null
+                            resumePositionFailed=false
+                            if(failedResume) closePlayer()
+                        }) {Text(if(resumePositionFailed) "Close player" else "Close")}}
                     )
                 }
                 if(!inPip && decoderPicker) DecoderChoiceSheet(
@@ -2087,7 +2400,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                     onDismiss={speedDialog=false;controlTick++}
                 )
             }
-        } else {
+        } else libraryStateHolder.SaveableStateProvider("library") {
             Scaffold(
                 containerColor=if(dark)surface else if(tab=="Me")Pale else Color.White,
                 topBar={
@@ -2105,7 +2418,16 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                             verticalAlignment=Alignment.CenterVertically) {
                             if(!root) {
                                 Surface(Modifier.size(44.dp).clickable {
-                                    if(folder!=null)folder=null else subpage=parentPage(subpage)
+                                    when {
+                                        folder!=null -> folder=null
+                                        subpage=="Private Folder" && privateFolderChoosingSource ->
+                                            privateFolderChoosingSource=false
+                                        subpage=="Private Folder" && privateFolderSelectionMode -> {
+                                            privateFolderSelectionMode=false
+                                            selectedIds=emptySet()
+                                        }
+                                        else -> subpage=parentPage(subpage)
+                                    }
                                     query=""
                                 },shape=RoundedCornerShape(50),color=MaterialTheme.colorScheme.surface) {
                                     Box(contentAlignment=Alignment.Center){Icon(Icons.Default.ArrowBack,"Back",tint=textColor)}
@@ -2156,7 +2478,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                         if(root && tab=="Recent") {
                             Row(Modifier.fillMaxWidth().padding(start=22.dp,end=22.dp,bottom=15.dp),
                                 verticalAlignment=Alignment.CenterVertically) {
-                                Text("${recent.size} recently watched",Modifier.weight(1f),
+                                Text("${recentVideos.size} recently watched",Modifier.weight(1f),
                                     color=Muted,fontSize=14.sp)
                                 if(recent.isNotEmpty()) Text("Clear",color=Color(0xFFD92D20),
                                     fontSize=14.sp,fontWeight=FontWeight.Bold,
@@ -2216,6 +2538,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                                         (android.view.LayoutInflater.from(ctx)
                                                             .inflate(R.layout.videonic_player_texture,null) as PlayerView).apply {
                                                             useController=false
+                                                            setKeepContentOnPlayerReset(true)
                                                             resizeMode=AspectRatioFrameLayout.RESIZE_MODE_FIT
                                                             player=controller
                                                         }
@@ -2330,7 +2653,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                             TextButton(onClick={context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}")))}) {Text("Open app settings")}
                         }
                     } else if(loading && tab!="Me") {
-                        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){Column(horizontalAlignment=Alignment.CenterHorizontally) {CircularProgressIndicator();Spacer(Modifier.height(12.dp));Text("Scanning videos...",color=Muted)}}
+                        Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){CircularProgressIndicator()}
                     } else if(scanError!=null && tab!="Me") {
                         EmptyState("Unable to scan videos",scanError.orEmpty()) {Button(onClick={refresh()}){Text("Retry")}}
                     } else if(tab=="Me") {
@@ -2350,12 +2673,35 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                 mode=decoderMode,fallback=decoderFallback,busy=decoderBusy,
                                 onMode={selectDecoder(it)},onFallback={selectDecoder(decoderMode,it)}
                             )
-                            "Theme" -> ReferenceThemeScreen(themeMode) { choice ->
-                                themeMode=choice;appPrefs.edit().putString("appearance_mode",choice).apply()
-                            }
-                            "Private Folder" -> SecurePrivateFolder(onImportedOriginalRemoved={refreshPending.intValue++},onPlay={ file,name ->
-                                openVideo(LocalVideo(-(file.name.hashCode().toLong().and(0x7fffffffL)+1L),Uri.fromFile(file),name,0L,file.length(),"Private",System.currentTimeMillis()))
-                            })
+                            "Theme" -> ReferenceThemeScreen(
+                                mode=themeMode,
+                                selectedColor=themeColor,
+                                onModeChange={choice->
+                                    themeMode=choice
+                                    appPrefs.edit().putString("appearance_mode",choice).apply()
+                                },
+                                onColorChange={choice->
+                                    themeColor=choice
+                                    appPrefs.edit().putString("theme_color",choice).apply()
+                                }
+                            )
+                            "Private Folder" -> SecurePrivateFolder(
+                                unlockedKey=privateFolderKey,
+                                onUnlockChange={privateFolderKey=it},
+                                availableVideos=videos,
+                                sourceSelectionVisible=privateFolderChoosingSource,
+                                onSourceSelectionVisibleChange={privateFolderChoosingSource=it},
+                                selectionMode=privateFolderSelectionMode,
+                                onSelectionModeChange={privateFolderSelectionMode=it},
+                                pendingLockVideo=lockPrivateTarget,
+                                onLockHandled={lockPrivateTarget=null},
+                                cleanStaleCache=!privateCacheInitialized,
+                                onStaleCacheCleaned={privateCacheInitialized=true},
+                                onImportedOriginalRemoved={refreshPending.intValue++},
+                                onPlay={ file,name ->
+                                    openVideo(LocalVideo(-(file.name.hashCode().toLong().and(0x7fffffffL)+1L),Uri.fromFile(file),name,0L,file.length(),"Private",System.currentTimeMillis()))
+                                }
+                            )
                             "Recycle Bin" -> RecycleBinScreen(onChanged={refreshPending.value++})
                             "Privacy Policy", "Terms of Use", "Permissions & Storage", "Open Source Licenses" -> PolicyScreen(subpage!!)
                             "Support & Feedback" -> FeedbackScreen()
@@ -2424,7 +2770,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                         Column {
                                             listOf("Privacy Policy","Terms of Use","Open Source Licenses","Permissions & Storage").forEachIndexed {index,name ->
                                                 ReferenceMeRow(when(index){0->Icons.Default.Shield;1->Icons.Default.Description;2->Icons.Default.Code;else->Icons.Default.Storage},
-                                                    name,"Read more",Accent,Color(0xFFDFEAFE)){subpage=name}
+                                                    name,"Read more",Accent,MaterialTheme.colorScheme.primaryContainer){subpage=name}
                                                 if(index<3)HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.22f))
                                             }
                                         }
@@ -2464,7 +2810,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                         )
                     } else {
                         val shown=when(tab){
-                            "Recent"-> recent.mapNotNull{id->videos.find{it.id.toString()==id}}
+                            "Recent"-> recentVideos
                             "Folders"-> videos.filter{it.folder==folder}
                             else-> videos
                         }.filter{it.title.contains(query,true)}.let { items ->
@@ -2587,7 +2933,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                 Text("${selectedIds.size} selected videos",color=Muted,fontSize=13.sp)
                 Text("Choose playlists, then tap Done to save.",fontSize=12.sp,color=Muted)
                 Surface(shape=RoundedCornerShape(14.dp),
-                    color=MaterialTheme.colorScheme.primaryContainer.copy(alpha=.45f),
+                    color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),
                     modifier=Modifier.fillMaxWidth().clickable {
                         // Use the same Create dialog as the single-video picker.
                         // Keep bulk edits in memory; do not save until Done.
@@ -2614,8 +2960,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                         else -> null
                     }
                     Surface(shape=RoundedCornerShape(12.dp),
-                        color=if(state==true) MaterialTheme.colorScheme.primaryContainer.copy(alpha=.52f)
-                              else MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),
+                        color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),
                         modifier=Modifier.fillMaxWidth().clickable {
                             bulkPlaylistEdits=bulkPlaylistEdits+(name to (state!=true))
                         }) {
@@ -2630,7 +2975,11 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                                 Box(Modifier.size(48.dp),contentAlignment=Alignment.Center) {
                                     Icon(Icons.Default.Remove,"Some selected videos",tint=Accent)
                                 }
-                            } else Checkbox(checked=state,onCheckedChange=null)
+                            } else Icon(
+                                if(state) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                if(state) "Selected" else "Not selected",
+                                tint=Accent
+                            )
                         }
                     }
                 }
@@ -2666,7 +3015,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                         fontSize=23.sp,fontWeight=FontWeight.ExtraBold,color=Ink)
                     Text("Choose what happens to the selected ${if(chosen.size==1)"video" else "videos"}.",color=Muted,fontSize=14.sp)
                     DeleteOption(Icons.Default.RestoreFromTrash,"Move to Recycle Bin",
-                        "Can be restored while Android keeps it in Trash",Color(0xFF2563EB)) {
+                        "Can be restored while Android keeps it in Trash",Color(0xFFE50914)) {
                         deleteChoices=emptyList();pendingTrash=chosen
                     }
                     DeleteOption(Icons.Default.DeleteForever,"Delete Permanently",
@@ -2845,6 +3194,12 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                         videoMenu=null
                         addToPlaylist=video
                     }
+                    if(video.folder!="Private") SheetAction(Icons.Default.Lock,
+                        "Lock in Private Folder",Accent) {
+                        videoMenu=null
+                        lockPrivateTarget=video
+                        tab="Me";folder=null;subpage="Private Folder";query=""
+                    }
                     SheetAction(Icons.Default.Share,"Share",Color(0xFF0D9488)) {
                         val share=Intent(Intent.ACTION_SEND).apply {
                             type="video/*";putExtra(Intent.EXTRA_STREAM,video.uri)
@@ -2879,7 +3234,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                 verticalArrangement=Arrangement.spacedBy(9.dp)) {
                 Text(video.title,maxLines=2,overflow=TextOverflow.Ellipsis,color=Muted,fontSize=13.sp)
                 Text("Select playlists, then tap Done to save.",fontSize=12.sp,color=Muted)
-                Surface(shape=RoundedCornerShape(14.dp),color=MaterialTheme.colorScheme.primaryContainer.copy(alpha=.45f),modifier=Modifier.fillMaxWidth().clickable{
+                Surface(shape=RoundedCornerShape(14.dp),color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),modifier=Modifier.fillMaxWidth().clickable{
                     playlistCreateFor=video
                     newPlaylistName=""
                     addToPlaylist=null
@@ -2894,8 +3249,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                     val checked=name in playlistSelection
                     Surface(
                         shape=RoundedCornerShape(12.dp),
-                        color=if(checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha=.52f)
-                              else MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),
+                        color=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.4f),
                         modifier=Modifier.fillMaxWidth().clickable {
                             playlistSelection=if(checked) playlistSelection-name else playlistSelection+name
                         }
@@ -2906,7 +3260,11 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                             Text(name,Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis)
                             // Checkbox visually reflects the temporary selection; its parent
                             // row handles clicks so one tap always toggles exactly once.
-                            Checkbox(checked=checked,onCheckedChange=null)
+                            Icon(
+                                if(checked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                if(checked) "Selected" else "Not selected",
+                                tint=Accent
+                            )
                         }
                     }
                 }
@@ -2922,7 +3280,7 @@ private fun VideonicApp(controller: MediaController?, activity: MainActivity, in
                 }
                 addToPlaylist=null
                 playlistSelection=emptySet()
-            }){Text("Done")}},
+            }){Text("Done",color=Muted)}},
             dismissButton={TextButton(onClick={
                 addToPlaylist=null
                 playlistSelection=emptySet()
@@ -3122,12 +3480,12 @@ private fun ReferenceEmptyPlaylist(onCreate:()->Unit) {
         Column(horizontalAlignment=Alignment.CenterHorizontally) {
             Box(Modifier.size(width=215.dp,height=169.dp),contentAlignment=Alignment.Center) {
                 Box(Modifier.size(154.dp,130.dp).offset(x=(-29).dp,y=(-8).dp)
-                    .clip(RoundedCornerShape(28.dp)).background(Color(0xFFD6E4FF)))
+                    .clip(RoundedCornerShape(28.dp)).background(Color(0xFFFFD4D4)))
                 Box(Modifier.size(162.dp,140.dp).offset(x=24.dp,y=(-18).dp)
-                    .clip(RoundedCornerShape(28.dp)).background(Color(0xFFBFD3FF)))
+                    .clip(RoundedCornerShape(28.dp)).background(Color(0xFFFFB3B3)))
                 Box(Modifier.size(155.dp,120.dp).offset(y=18.dp)
                     .clip(RoundedCornerShape(26.dp))
-                    .background(Brush.linearGradient(listOf(Color(0xFF3B82F6),Color(0xFF4338CA)))),
+                    .background(Brush.linearGradient(listOf(Color(0xFFE50914),Color(0xFF990000)))),
                     contentAlignment=Alignment.Center) {
                     Icon(Icons.Default.PlaylistPlay,null,tint=Color.White,modifier=Modifier.size(57.dp))
                 }
@@ -3158,7 +3516,7 @@ private fun ReferencePlaylistList(names:List<String>,library:LocalLibrary,grid:B
                     shadowElevation=2.dp,modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(23.dp)).clickable{onOpen(name)}) {
                     Column(Modifier.padding(18.dp)) {
                         Box(Modifier.size(55.dp).clip(RoundedCornerShape(17.dp))
-                            .background(Brush.linearGradient(listOf(Color(0xFF3B82F6),Color(0xFF4338CA)))),
+                            .background(Brush.linearGradient(listOf(Color(0xFFE50914),Color(0xFF990000)))),
                             contentAlignment=Alignment.Center) {
                             Icon(Icons.Default.PlaylistPlay,null,tint=Color.White,modifier=Modifier.size(28.dp))
                         }
@@ -3179,7 +3537,7 @@ private fun ReferencePlaylistList(names:List<String>,library:LocalLibrary,grid:B
                 shadowElevation=2.dp,modifier=Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).clickable{onOpen(name)}) {
                 Row(Modifier.padding(18.dp),verticalAlignment=Alignment.CenterVertically) {
                     Box(Modifier.size(57.dp).clip(RoundedCornerShape(18.dp))
-                        .background(Brush.linearGradient(listOf(Color(0xFF3B82F6),Color(0xFF4338CA)))),
+                        .background(Brush.linearGradient(listOf(Color(0xFFE50914),Color(0xFF990000)))),
                         contentAlignment=Alignment.Center) {
                         Icon(Icons.Default.PlaylistPlay,null,tint=Color.White,modifier=Modifier.size(31.dp))
                     }
@@ -3228,6 +3586,9 @@ private fun ReferenceFavoritesScreen(videos:List<LocalVideo>,favorites:Set<Strin
                         }
                         IconButton(onClick={onFavorite(video)},modifier=Modifier.size(38.dp)) {
                             Icon(Icons.Default.Favorite,"Remove favorite",tint=Color(0xFFE73559))
+                        }
+                        IconButton(onClick={onMenu(video)},modifier=Modifier.size(38.dp)) {
+                            Icon(Icons.Default.MoreVert,"More options",tint=Muted)
                         }
                     }
                 }
@@ -3329,19 +3690,19 @@ private fun ReferenceSettingsScreen(
             modifier=Modifier.padding(top=2.dp,start=5.dp))}
         item {
             ReferenceSectionCard {
-                ReferenceSettingEntry(Icons.Default.PlayArrow,"Resume playback",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.PlayArrow,"Resume playback",Accent,MaterialTheme.colorScheme.primaryContainer,
                     checked=resumePlayback,onChecked=onResume)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.12f))
-                ReferenceSettingEntry(Icons.Default.SkipNext,"Auto-play next",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.SkipNext,"Auto-play next",Accent,MaterialTheme.colorScheme.primaryContainer,
                     checked=autoPlayNext,onChecked=onAutoPlay)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.12f))
-                ReferenceSettingEntry(Icons.Default.Speed,"Default speed",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.Speed,"Default speed",Accent,MaterialTheme.colorScheme.primaryContainer,
                     value="${speedLabel(defaultSpeed)}x",onClick=onSpeed)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.12f))
-                ReferenceSettingEntry(Icons.Default.Restore,"Seek duration",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.Restore,"Seek duration",Accent,MaterialTheme.colorScheme.primaryContainer,
                     value="$seekSeconds sec",onClick=onSeek)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.12f))
-                ReferenceSettingEntry(Icons.Default.Memory,"Decoder",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.Memory,"Decoder",Accent,MaterialTheme.colorScheme.primaryContainer,
                     value=decoderModeLabel(decoderMode),onClick=onDecoderInfo)
             }
         }
@@ -3369,13 +3730,13 @@ private fun ReferenceSettingsScreen(
                 ReferenceSettingEntry(Icons.Default.GridView,"Grid view",Color(0xFFD97706),Color(0xFFFFEDCA),
                     checked=grid,onChecked=onGrid)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.12f))
-                ReferenceSettingEntry(Icons.Default.AutoAwesome,"Bottom navigation",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.AutoAwesome,"Bottom navigation",Accent,MaterialTheme.colorScheme.primaryContainer,
                     value=if(navigationStyle=="glass")"Liquid glass" else "Classic",onClick=onNavigationStyle)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.12f))
-                ReferenceSettingEntry(Icons.Default.ScreenRotation,"Auto rotate",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.ScreenRotation,"Auto rotate",Accent,MaterialTheme.colorScheme.primaryContainer,
                     checked=autoRotate,onChecked=onAutoRotate)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.12f))
-                ReferenceSettingEntry(Icons.Default.LightMode,"Keep screen awake",Accent,Color(0xFFDFEAFE),
+                ReferenceSettingEntry(Icons.Default.LightMode,"Keep screen awake",Accent,MaterialTheme.colorScheme.primaryContainer,
                     checked=keepScreenOn,onChecked=onKeepScreenOn)
             }
         }
@@ -3384,15 +3745,21 @@ private fun ReferenceSettingsScreen(
 }
 
 @Composable
-private fun ReferenceThemeScreen(mode:String,onChange:(String)->Unit) {
-    Column(Modifier.fillMaxSize().padding(horizontal=20.dp,vertical=16.dp)) {
+private fun ReferenceThemeScreen(
+    mode:String,
+    selectedColor:String,
+    onModeChange:(String)->Unit,
+    onColorChange:(String)->Unit
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal=20.dp,vertical=16.dp)
+        .verticalScroll(rememberScrollState())) {
         Text("Choose how Videonic Player looks. System follows your phone setting.",
             color=Muted,fontSize=14.sp,lineHeight=23.sp)
         Spacer(Modifier.height(23.dp))
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(11.dp)) {
             listOf("light","dark","system").forEach { option ->
                 val active=mode==option
-                Column(Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).clickable{onChange(option)},horizontalAlignment=Alignment.CenterHorizontally) {
+                Column(Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).clickable{onModeChange(option)},horizontalAlignment=Alignment.CenterHorizontally) {
                     val light=Color(0xFFF4F6FA)
                     val night=Color(0xFF0F172A)
                     Surface(shape=RoundedCornerShape(20.dp),color=if(option=="dark")night else light,
@@ -3427,6 +3794,50 @@ private fun ReferenceThemeScreen(mode:String,onChange:(String)->Unit) {
                 }
             }
         }
+        Spacer(Modifier.height(26.dp))
+        Text("Theme color",fontWeight=FontWeight.Bold,fontSize=18.sp)
+        Text("Choose an accent for buttons, selections and highlights.",
+            color=Muted,fontSize=13.sp,lineHeight=20.sp)
+        Spacer(Modifier.height(12.dp))
+        ThemeColorOptions.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                row.forEach { option ->
+                    val active=selectedColor==option.id
+                    Surface(
+                        modifier=Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                            .clickable(onClickLabel="Use ${option.label} theme color") {
+                                onColorChange(option.id)
+                            },
+                        shape=RoundedCornerShape(16.dp),
+                        color=MaterialTheme.colorScheme.surface,
+                        border=BorderStroke(
+                            if(active)2.dp else 1.dp,
+                            if(active)MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outline.copy(alpha=.25f)
+                        )
+                    ) {
+                        Column(
+                            Modifier.padding(vertical=12.dp,horizontal=8.dp),
+                            horizontalAlignment=Alignment.CenterHorizontally,
+                            verticalArrangement=Arrangement.spacedBy(7.dp)
+                        ) {
+                            Box(
+                                Modifier.size(34.dp).clip(RoundedCornerShape(100))
+                                    .background(Brush.linearGradient(option.swatchColors)),
+                                contentAlignment=Alignment.Center
+                            ) {
+                                if(active) Icon(Icons.Default.Check,"Selected",tint=Color.White,
+                                    modifier=Modifier.size(18.dp))
+                            }
+                            Text(option.label,fontWeight=if(active)FontWeight.Bold else FontWeight.Medium,
+                                fontSize=12.sp,maxLines=1)
+                        }
+                    }
+                }
+                repeat(3-row.size) { Spacer(Modifier.weight(1f)) }
+            }
+            Spacer(Modifier.height(9.dp))
+        }
     }
 }
 
@@ -3439,7 +3850,7 @@ private fun RecentVideoArtwork(video:LocalVideo,modifier:Modifier=Modifier) {
     LaunchedEffect(video.id) {
         if(thumbnail==null) thumbnail=withContext(Dispatchers.IO) {
             VideoThumbnailCache.get(thumbnailKey) ?: runCatching {
-                context.contentResolver.loadThumbnail(video.uri,android.util.Size(600,500),null)
+                loadVideoThumbnail(context,video.uri,600,500)
             }.getOrNull()?.also { VideoThumbnailCache.put(thumbnailKey,it) }
         }
     }
@@ -3456,12 +3867,13 @@ private fun RecentVideoArtwork(video:LocalVideo,modifier:Modifier=Modifier) {
 @Composable
 private fun RecentWatchRing(progress:Float,modifier:Modifier=Modifier) {
     val safeProgress=progress.coerceIn(0f,1f)
+    val accent=Accent
     Box(modifier.size(52.dp).clip(RoundedCornerShape(100)).background(Color.White),contentAlignment=Alignment.Center) {
         Canvas(Modifier.fillMaxSize().padding(4.dp)) {
             val lineWidth=4.dp.toPx()
             drawArc(color=Color(0xFFE1E5EC),startAngle=-90f,sweepAngle=360f,
                 useCenter=false,style=Stroke(width=lineWidth,cap=StrokeCap.Round))
-            if(safeProgress>0f) drawArc(color=Accent,startAngle=-90f,
+            if(safeProgress>0f) drawArc(color=accent,startAngle=-90f,
                 sweepAngle=360f*safeProgress,useCenter=false,
                 style=Stroke(width=lineWidth,cap=StrokeCap.Round))
         }
@@ -3739,7 +4151,7 @@ private fun VideoThumb(video:LocalVideo,modifier:Modifier=Modifier) {
         LaunchedEffect(video.id) {
             if(thumbnail==null) thumbnail=withContext(Dispatchers.IO) {
                 VideoThumbnailCache.get(thumbnailKey) ?: runCatching {
-                    context.contentResolver.loadThumbnail(video.uri,android.util.Size(240,160),null)
+                    loadVideoThumbnail(context,video.uri,240,160)
                 }.getOrNull()?.also { VideoThumbnailCache.put(thumbnailKey,it) }
             }
         }
@@ -4200,16 +4612,22 @@ private fun SettingsToggle(icon:androidx.compose.ui.graphics.vector.ImageVector,
 @Composable
 private fun MeScreen(videos:List<LocalVideo>,favorites:Set<String>,playlists:List<String>,library:LocalLibrary,open:(String)->Unit) {
     val storage=remember { deviceStorageInfo() }
+    val themePrimary=MaterialTheme.colorScheme.primary
+    val themeSecondary=MaterialTheme.colorScheme.secondary
     LazyColumn(contentPadding=PaddingValues(horizontal=20.dp,vertical=12.dp),
         verticalArrangement=Arrangement.spacedBy(15.dp)) {
         item {
             Surface(shape=RoundedCornerShape(28.dp),color=Color.Transparent) {
                 Column(Modifier.fillMaxWidth().background(
-                    Brush.linearGradient(listOf(Color(0xFF3B82F6),Color(0xFF4338CA))),
+                    Brush.linearGradient(listOf(themePrimary,themeSecondary)),
                     RoundedCornerShape(28.dp)).padding(20.dp)) {
                     Row(verticalAlignment=Alignment.CenterVertically) {
-                        Image(painterResource(R.drawable.videonic_brand),"Videonic Player",
-                            Modifier.size(58.dp).clip(RoundedCornerShape(14.dp)))
+                        Box(Modifier.size(58.dp).clip(RoundedCornerShape(14.dp))
+                            .background(Brush.linearGradient(listOf(themePrimary,themeSecondary))),
+                            contentAlignment=Alignment.Center) {
+                            Icon(Icons.Default.PlayArrow,"Videonic Player",tint=Color.White,
+                                modifier=Modifier.size(42.dp))
+                        }
                         Spacer(Modifier.width(14.dp))
                         Column {
                             Text("Videonic Player",color=Color.White,fontSize=24.sp,fontWeight=FontWeight.Bold)
@@ -4235,7 +4653,7 @@ private fun MeScreen(videos:List<LocalVideo>,favorites:Set<String>,playlists:Lis
                     CollectionTile("Favorites","${favorites.size} videos",Icons.Default.Favorite,
                         Color(0xFFFCE2E9),Color(0xFFE73559),Modifier.weight(1f)){open("Favorites")}
                     CollectionTile("Playlists","${playlists.size} lists",Icons.Default.PlaylistPlay,
-                        Color(0xFFDBEAFE),Accent,Modifier.weight(1f)){open("Playlists")}
+                        MaterialTheme.colorScheme.primaryContainer,Accent,Modifier.weight(1f)){open("Playlists")}
                 }
                 Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                     CollectionTile("Private Folder","PIN protected",Icons.Default.Lock,
@@ -4252,7 +4670,7 @@ private fun MeScreen(videos:List<LocalVideo>,favorites:Set<String>,playlists:Lis
                 shadowElevation=3.dp) {
                 Column {
                     ReferenceMeRow(Icons.Default.Settings,"Settings","Appearance and preferences",
-                        Accent,Color(0xFFDFEAFE)){open("Settings")}
+                        Accent,MaterialTheme.colorScheme.primaryContainer){open("Settings")}
                     HorizontalDivider(color=MaterialTheme.colorScheme.outline.copy(alpha=.22f))
                     ReferenceMeRow(Icons.Default.Info,"About","App information and legal",
                         Color(0xFF0D9488),Color(0xFFD6F5EE)){open("About")}
@@ -4260,7 +4678,7 @@ private fun MeScreen(videos:List<LocalVideo>,favorites:Set<String>,playlists:Lis
             }
         }
         item { ReferenceMeRow(Icons.Default.Email,"Support & Feedback","Get help or share an idea",
-            Accent,Color(0xFFDFEAFE)){open("Support & Feedback")} }
+            Accent,MaterialTheme.colorScheme.primaryContainer){open("Support & Feedback")} }
     }
 }
 @Composable
@@ -4305,7 +4723,7 @@ private fun ReferenceMeRow(icon:androidx.compose.ui.graphics.vector.ImageVector,
 }
 @Composable
 private fun MeEntry(icon:androidx.compose.ui.graphics.vector.ImageVector,title:String,subtitle:String,onClick:()->Unit) {
-    ReferenceMeRow(icon,title,subtitle,Accent,Color(0xFFDFEAFE),onClick)
+    ReferenceMeRow(icon,title,subtitle,Accent,MaterialTheme.colorScheme.primaryContainer,onClick)
 }
 
 
@@ -4497,12 +4915,12 @@ private fun DecoderChoiceSheet(
                         .clip(RoundedCornerShape(16.dp))
                         .clickable(enabled=!busy) { onChoose(choice) },
                     shape=RoundedCornerShape(16.dp),
-                    color=if(selected) Color(0xFF2563EB).copy(alpha=if(isPlayer).26f else .10f)
+                    color=if(selected) MaterialTheme.colorScheme.primary.copy(alpha=if(isPlayer).26f else .10f)
                         else if(isPlayer) Color(0xFF282535) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f)
                 ) {
                     Row(Modifier.fillMaxWidth().padding(horizontal=15.dp,vertical=16.dp),
                         verticalAlignment=Alignment.CenterVertically) {
-                        Icon(Icons.Default.Memory,null,tint=if(selected)Color(0xFF72A3FF) else contentColor.copy(alpha=.65f))
+                        Icon(Icons.Default.Memory,null,tint=if(selected)MaterialTheme.colorScheme.primary else contentColor.copy(alpha=.65f))
                         Spacer(Modifier.width(13.dp))
                         Column(Modifier.weight(1f)) {
                             Text(name,color=contentColor,fontWeight=if(selected)FontWeight.Bold else FontWeight.Medium,fontSize=15.sp)
@@ -4690,7 +5108,7 @@ private fun TrashedClipArtwork(clip:TrashedClip,modifier:Modifier=Modifier) {
     var thumbnail by remember(clip.uri) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(clip.uri) {
         thumbnail=withContext(Dispatchers.IO) {
-            runCatching { context.contentResolver.loadThumbnail(clip.uri,android.util.Size(220,140),null) }.getOrNull()
+            runCatching { loadVideoThumbnail(context,clip.uri,220,140) }.getOrNull()
         }
     }
     Box(modifier.clip(RoundedCornerShape(17.dp))
@@ -4846,8 +5264,7 @@ private fun RecycleBinScreen(onChanged:()->Unit={}) {
                 contentPadding=PaddingValues(bottom=24.dp)) {
                 items(clips,key={it.uri.toString()}) { clip ->
                     val checked=clip.uri.toString() in selectedUris
-                    val rowColor=if(checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha=.55f)
-                        else MaterialTheme.colorScheme.surface
+                    val rowColor=MaterialTheme.colorScheme.surface
                     Surface(shape=RoundedCornerShape(22.dp),color=rowColor,shadowElevation=2.dp) {
                         Row(Modifier.fillMaxWidth().combinedClickable(
                             onClick={
@@ -4895,10 +5312,14 @@ private fun RecycleBinScreen(onChanged:()->Unit={}) {
                                     }
                                 }
                             } else {
-                                Checkbox(checked=checked,onCheckedChange={ value ->
+                                IconButton(onClick={
+                                    val value=!checked
                                     selectedUris=if(value) selectedUris+clip.uri.toString()
                                         else selectedUris-clip.uri.toString()
-                                },modifier=Modifier.size(40.dp))
+                                },modifier=Modifier.size(40.dp)) {
+                                    Icon(if(checked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                        if(checked) "Selected" else "Not selected",tint=Accent)
+                                }
                             }
                         }
                     }

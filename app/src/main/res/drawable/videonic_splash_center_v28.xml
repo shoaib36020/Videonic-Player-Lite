@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One centered bitmap avoids unexpected layer gravity offsets; artwork fits
-     inside the platform's 192dp-diameter safe circle. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@drawable/videonic_splash_composite_v30"
-          android:gravity="center" android:width="288dp" android:height="288dp" />
+    <item android:drawable="@android:color/white" />
+    <item
+        android:width="280dp"
+        android:height="280dp"
+        android:gravity="center"
+        android:drawable="@drawable/videonic_splash_composite_v30" />
 </layer-list>

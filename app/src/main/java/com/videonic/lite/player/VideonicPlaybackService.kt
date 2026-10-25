@@ -96,9 +96,9 @@ class VideonicPlaybackService : MediaSessionService() {
             ProgressiveMediaSource.Factory(DefaultDataSource.Factory(this),MediaParserExtractorAdapter.FACTORY)
         } else DefaultMediaSourceFactory(this,extractors)
         return ExoPlayer.Builder(this, renderers, mediaSources).build().apply {
-            // Prefer a close existing keyframe in sparse-GOP files. This makes seeking
-            // faster/less prone to stalling, but it cannot make an unindexed stream seekable.
-            setSeekParameters(SeekParameters.CLOSEST_SYNC)
+            // Never select a sync frame after the requested time; some MKVs have
+            // widely spaced keyframes and CLOSEST_SYNC can jump playback forward.
+            setSeekParameters(SeekParameters.EXACT)
             setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true

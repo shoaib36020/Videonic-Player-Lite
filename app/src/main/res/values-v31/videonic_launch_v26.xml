@@ -3,6 +3,6 @@
 <style name="VideonicLaunchV26" parent="@style/Theme.Videonic">
   <item name="android:windowBackground">@drawable/videonic_launch_v26</item>
   <item name="android:windowSplashScreenBackground">#FFFFFF</item>
-  <item name="android:windowSplashScreenAnimatedIcon">@drawable/videonic_splash_center_v28</item>
+  <item name="android:windowSplashScreenAnimatedIcon">@drawable/videonic_splash_composite_v30</item>
 </style>
 </resources>
